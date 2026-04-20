@@ -1,0 +1,50 @@
+name: Build Video Mixer
+
+# Этот блок позволяет запускать компиляцию вручную по кнопке
+on:
+  workflow_dispatch: 
+
+jobs:
+  build:
+    # Запускаем две параллельные задачи: на Windows и на macOS
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Копирование кода
+      uses: actions/checkout@v4
+
+    - name: Установка Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Установка библиотек
+      run: |
+        python -m pip install --upgrade pip
+        pip install customtkinter yt-dlp pyinstaller
+
+    - name: Компиляция для Windows
+      if: matrix.os == 'windows-latest'
+      run: pyinstaller --noconsole --onefile --icon=icon.ico --add-data "icon.ico;." --name "VideoMixer_Win" app.py
+
+    - name: Компиляция для macOS
+      if: matrix.os == 'macos-latest'
+      run: pyinstaller --noconsole --onefile --windowed --icon=icon.icns --add-data "icon.icns:." --name "VideoMixer_Mac" app.py
+
+    - name: Загрузка готового EXE (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoMixer-Windows
+        path: dist/VideoMixer_Win.exe
+
+    - name: Загрузка готового APP (macOS)
+      if: matrix.os == 'macos-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoMixer-macOS
+        path: dist/VideoMixer_Mac.app
