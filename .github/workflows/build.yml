@@ -1,12 +1,14 @@
-name: Build Video Mixer
+name: Build Download Video Mixer
 
-# Этот блок позволяет запускать компиляцию вручную по кнопке
 on:
   workflow_dispatch: 
 
+# Убираем системное предупреждение GitHub про Node.js
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
-    # Запускаем две параллельные задачи: на Windows и на macOS
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
@@ -27,24 +29,38 @@ jobs:
         python -m pip install --upgrade pip
         pip install customtkinter yt-dlp pyinstaller
 
+    # --- СБОРКА ДЛЯ WINDOWS ---
     - name: Компиляция для Windows
       if: matrix.os == 'windows-latest'
-      run: pyinstaller --noconsole --onefile --icon=icon.ico --add-data "icon.ico;." --name "VideoMixer_Win" app.py
-
-    - name: Компиляция для macOS
-      if: matrix.os == 'macos-latest'
-      run: pyinstaller --noconsole --onefile --windowed --icon=icon.icns --add-data "icon.icns:." --name "VideoMixer_Mac" app.py
+      run: pyinstaller --noconsole --onefile --icon=icon.ico --add-data "icon.ico;." --name "Download Video Mixer" app.py
 
     - name: Загрузка готового EXE (Windows)
       if: matrix.os == 'windows-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: VideoMixer-Windows
-        path: dist/VideoMixer_Win.exe
+        name: Download-Video-Mixer-Windows
+        path: dist/Download Video Mixer.exe
 
-    - name: Загрузка готового APP (macOS)
+    # --- СБОРКА ДЛЯ MACOS ---
+    - name: Компиляция для macOS
+      if: matrix.os == 'macos-latest'
+      run: pyinstaller --noconsole --onefile --windowed --icon=icon.icns --add-data "icon.icns:." --name "Download Video Mixer" app.py
+
+    - name: Создание DMG образа (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        # Создаем временную папку для формирования диска
+        mkdir -p dist/dmg_folder
+        # Перемещаем туда наше скомпилированное приложение
+        mv "dist/Download Video Mixer.app" dist/dmg_folder/
+        # Создаем ярлык папки Applications (Программы)
+        ln -s /Applications dist/dmg_folder/Applications
+        # Упаковываем это всё в DMG образ
+        hdiutil create -volname "Download Video Mixer" -srcfolder dist/dmg_folder -ov -format UDZO "dist/Download Video Mixer.dmg"
+
+    - name: Загрузка готового DMG (macOS)
       if: matrix.os == 'macos-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: VideoMixer-macOS
-        path: dist/VideoMixer_Mac.app
+        name: Download-Video-Mixer-macOS
+        path: dist/Download Video Mixer.dmg
