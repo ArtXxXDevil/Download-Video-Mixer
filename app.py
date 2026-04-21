@@ -10,7 +10,7 @@ import platform
 import urllib.request
 import zipfile
 import stat
-import shutil # Добавлен для безопасного скачивания
+import shutil
 import ssl
 
 # --- ПОРТАТИВНАЯ ЛОГИКА ПУТЕЙ ---
@@ -27,7 +27,7 @@ class SettingsManager:
     def load():
         defaults = {
             "add_translation": False,
-            "vol_original": 60,
+            "vol_original": 15,
             "vol_translate": 100,
             "save_path": ""
         }
@@ -44,6 +44,7 @@ class SettingsManager:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=4)
 
+
 class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -58,10 +59,15 @@ class SettingsWindow(ctk.CTkToplevel):
         y = parent.winfo_y() + (parent.winfo_height() // 2) - (window_height // 2)
         self.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
+        self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.transient(parent)
         self.grab_set()
         self.focus_set()
+
+        # Ставим иконку с задержкой в 250мс, чтобы система успела полностью отрисовать окно
+        if getattr(parent, 'icon_path', None):
+            self.after(250, lambda: self.wm_iconbitmap(parent.icon_path))
 
         self.settings = SettingsManager.load()
 
@@ -102,10 +108,12 @@ class SettingsWindow(ctk.CTkToplevel):
         self.lbl_vol2.configure(text=f"Громкость перевода: {int(self.slider_vol2.get())}%")
 
     def browse_folder(self):
-        path = filedialog.askdirectory()
+        current_path = self.path_entry.get()
+        initial = os.path.abspath(current_path) if current_path and os.path.exists(current_path) else BASE_DIR
+        path = filedialog.askdirectory(initialdir=initial)
         if path:
             self.path_entry.delete(0, "end")
-            self.path_entry.insert(0, path)
+            self.path_entry.insert(0, os.path.abspath(path))
 
     def on_close(self):
         new_settings = {
@@ -119,43 +127,47 @@ class SettingsWindow(ctk.CTkToplevel):
         self.grab_release()
         self.destroy()
 
+
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("Download Video Mixer v1.1")
+        self.title("Download Video Mixer v1.2")
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # 1. СНАЧАЛА определяем операционную систему
         self.os_name = platform.system()
+        self.stop_requested = False
+        self.is_downloading = False
         
-        # 2. ЗАТЕМ устанавливаем иконку окна
         def resource_path(relative_path):
-            """ Получаем путь к ресурсу, работающий и в скрипте, и в скомпилированном .exe """
             try:
                 base_path = sys._MEIPASS
             except Exception:
                 base_path = os.path.abspath(".")
             return os.path.join(base_path, relative_path)
 
+        self.icon_path = None
         if self.os_name == "Windows":
             icon_path = resource_path("icon.ico")
             if os.path.exists(icon_path):
+                self.icon_path = icon_path
                 self.iconbitmap(icon_path)
         
         window_width = 600
-        window_height = 450
+        window_height = 380 
+        
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         x = int((screen_width / 2) - (window_width / 2))
         y = int((screen_height / 2) - (window_height / 2))
         self.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
+        self.resizable(False, False)
+        
         self.settings = SettingsManager.load()
         self.translation_file = None
         self.video_title = "video"
-        self.current_download_phase = "Подготовка"
         
-        self.os_name = platform.system()
         self.ffmpeg_exe_name = "ffmpeg.exe" if self.os_name == "Windows" else "ffmpeg"
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
 
@@ -190,6 +202,8 @@ class VideoApp(ctk.CTk):
 
         self.res_label = ctk.CTkLabel(self, text="Качество видео:")
         self.res_label.pack()
+        
+        # Заблокировано по умолчанию, пока нет ссылки
         self.res_combobox = ctk.CTkComboBox(self, values=["Нет данных"], state="disabled", width=200)
         self.res_combobox.pack(pady=5)
 
@@ -219,7 +233,31 @@ class VideoApp(ctk.CTk):
         self.toggle_ui("disabled")
         threading.Thread(target=self.check_and_download_ffmpeg, daemon=True).start()
 
-    # --- ИСПРАВЛЕННАЯ ЛОГИКА АВТОЗАГРУЗКИ FFMPEG ---
+    def on_closing(self):
+        if self.is_downloading:
+            if messagebox.askyesno("Подтверждение", "Процесс скачивания еще не завершен.\n\nВы уверены, что хотите прервать его и закрыть программу?"):
+                self.stop_requested = True
+                self.status_label.configure(text="Очистка кэша и выход...", text_color="orange")
+                self.attributes('-disabled', True) 
+                self.after(1500, self._perform_exit)
+        else:
+            self._perform_exit()
+
+    def _perform_exit(self):
+        self.clean_temp_files()
+        self.destroy()
+        os._exit(0)
+
+    def clean_temp_files(self):
+        save_dir = self.settings.get("save_path", "")
+        if save_dir and os.path.exists(save_dir):
+            for file_name in os.listdir(save_dir):
+                if file_name.startswith("temp_v"):
+                    try:
+                        os.remove(os.path.join(save_dir, file_name))
+                    except Exception:
+                        pass
+
     def check_and_download_ffmpeg(self):
         if os.path.exists(self.ffmpeg_path):
             self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
@@ -229,28 +267,17 @@ class VideoApp(ctk.CTk):
         self.after(0, lambda: self.status_label.configure(text="Загрузка FFmpeg (около 35-80 МБ)... Ждите", text_color="orange"))
         
         try:
-            if self.os_name == "Windows":
-                # Надежная ссылка на свежую сборку для Windows
-                url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-            else:
-                # Надежная ссылка для macOS
-                url = "https://evermeet.cx/ffmpeg/getrelease/zip"
-
+            url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" if self.os_name == "Windows" else "https://evermeet.cx/ffmpeg/getrelease/zip"
             zip_path = os.path.join(APP_DIR, "ffmpeg_temp.zip")
             
-            # Создаем контекст, игнорирующий строгую проверку SSL (специально для macOS)
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
-            # Притворяемся браузером
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'})
-            
-            # Добавляем context=ctx в запрос
             with urllib.request.urlopen(req, context=ctx) as response, open(zip_path, 'wb') as out_file:
                 shutil.copyfileobj(response, out_file)
 
-            # Распаковываем нужный файл
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 for file_info in zip_ref.infolist():
                     if file_info.filename.endswith(self.ffmpeg_exe_name):
@@ -261,31 +288,23 @@ class VideoApp(ctk.CTk):
             if os.path.exists(zip_path):
                 os.remove(zip_path)
 
-            # На macOS выдаем права на запуск файла
             if self.os_name != "Windows":
-                st = os.stat(self.ffmpeg_path)
-                os.chmod(self.ffmpeg_path, st.st_mode | stat.S_IEXEC)
+                os.chmod(self.ffmpeg_path, os.stat(self.ffmpeg_path).st_mode | stat.S_IEXEC)
 
             self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
             self.after(0, lambda: self.toggle_ui("normal"))
             
         except Exception as e:
             self.after(0, lambda: self.status_label.configure(text="❌ Ошибка установки FFmpeg", text_color="red"))
-            self.after(0, lambda err=e: messagebox.showerror(
-                "Ошибка загрузки", 
-                f"Не удалось скачать ядро FFmpeg автоматически.\n\nДетали ошибки:\n{err}\n\nВы можете скачать файл {self.ffmpeg_exe_name} вручную и положить его в ту же папку, где находится эта программа."
-            ))
+            self.after(0, lambda err=e: messagebox.showerror("Ошибка загрузки", f"Не удалось скачать ядро FFmpeg.\n\nДетали: {err}"))
 
-    # --- ОСТАЛЬНАЯ ЛОГИКА ---
     def show_context_menu(self, event):
         self.context_menu.tk_popup(event.x_root, event.y_root)
 
     def handle_cyrillic_hotkeys(self, event):
         char = event.char.lower() if event.char else ""
-        if char == 'м': return self.paste_text()
-        elif char == 'с': return self.copy_text()
-        elif char == 'ч': return self.cut_text()
-        elif char == 'ф': return self.select_all()
+        keys = {'м': self.paste_text, 'с': self.copy_text, 'ч': self.cut_text, 'ф': self.select_all}
+        if char in keys: return keys[char]()
 
     def paste_text(self, event=None):
         try:
@@ -293,7 +312,7 @@ class VideoApp(ctk.CTk):
             self.url_entry.delete(0, "end") 
             self.url_entry.insert(0, text)
             self.on_url_change(None)
-        except Exception: pass
+        except: pass
         return "break"
 
     def copy_text(self, event=None):
@@ -315,32 +334,34 @@ class VideoApp(ctk.CTk):
 
     def toggle_ui(self, state):
         self.url_entry.configure(state=state)
-        self.res_combobox.configure(state=state)
         self.settings_btn.configure(state=state)
-        self.start_btn.configure(state=state)
-        if self.settings["add_translation"]: self.file_btn.configure(state=state)
+        
+        if self.settings.get("add_translation"): 
+            self.file_btn.configure(state=state)
+            
+        if state == "disabled":
+            self.res_combobox.configure(state="disabled")
+        else:
+            # Делаем поле только для чтения (нельзя вписать свой текст), если в нем есть реальные данные
+            if self.res_combobox.cget("values") != ["Нет данных"]:
+                self.res_combobox.configure(state="readonly")
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
-        if self.settings["add_translation"]:
-            self.file_btn.configure(state="normal")
+        if self.settings.get("add_translation"):
             self.start_btn.configure(text="Скачать и склеить")
+            self.file_btn.configure(state="normal")
         else:
-            self.file_btn.configure(state="disabled")
             self.start_btn.configure(text="Скачать")
+            self.file_btn.configure(state="disabled")
 
     def open_settings(self): SettingsWindow(self)
 
     def get_standard_res(self, w, h):
         max_dim = max(w, h)
-        if max_dim >= 7680: return 4320
-        if max_dim >= 3840: return 2160
-        if max_dim >= 2560: return 1440
-        if max_dim >= 1920: return 1080
-        if max_dim >= 1280: return 720
-        if max_dim >= 854:  return 480
-        if max_dim >= 640:  return 360
-        if max_dim >= 426:  return 240
+        res_map = {7680: 4320, 3840: 2160, 2560: 1440, 1920: 1080, 1280: 720, 854: 480, 640: 360, 426: 240}
+        for threshold, res in res_map.items():
+            if max_dim >= threshold: return res
         return 0
 
     def on_url_change(self, _):
@@ -353,7 +374,6 @@ class VideoApp(ctk.CTk):
 
     def fetch_info(self, url):
         try:
-            # Добавили 'noplaylist': True
             with yt_dlp.YoutubeDL({'quiet': True, 'nocheckcertificate': True, 'noplaylist': True}) as ydl:
                 info = ydl.extract_info(url, download=False)
                 self.video_title = info.get('title', 'video')
@@ -368,19 +388,15 @@ class VideoApp(ctk.CTk):
                                 valid_resolutions[std_res] = fps if fps else 30
                 heights = sorted(list(valid_resolutions.keys()), reverse=True)
                 if heights:
-                    res_values = []
-                    for h in heights:
-                        fps = valid_resolutions[h]
-                        fps_str = str(int(fps)) if fps and fps > 30 else ""
-                        badge = " 8K" if h >= 4320 else " 4K" if h >= 2160 else " HD" if h >= 1080 else ""
-                        res_values.append(f"{h}p{fps_str}{badge}")
+                    res_values = [f"{h}p{str(int(valid_resolutions[h])) if valid_resolutions[h] > 30 else ''}{' 8K' if h >= 4320 else ' 4K' if h >= 2160 else ' HD' if h >= 1080 else ''}" for h in heights]
                     self.after(0, lambda: self.update_res_list(res_values))
-        except Exception: self.after(0, lambda: self.status_label.configure(text="❌ Ошибка анализа"))
+        except: self.after(0, lambda: self.status_label.configure(text="❌ Ошибка анализа"))
 
     def update_res_list(self, values):
-        self.res_combobox.configure(values=values, state="normal")
+        # При получении данных переводим в readonly
+        self.res_combobox.configure(values=values, state="readonly")
         self.res_combobox.set(values[0])
-        self.status_label.configure(text="✅ Качество выбрано")
+        self.status_label.configure(text="✅ Качество выбрано", text_color="green")
 
     def select_file(self):
         path = filedialog.askopenfilename(filetypes=[("Audio Files", "*.mp3 *.wav *.m4a")])
@@ -388,7 +404,13 @@ class VideoApp(ctk.CTk):
             self.translation_file = path
             self.file_label.configure(text=os.path.basename(path))
 
+    def stop_process(self):
+        self.stop_requested = True
+        self.status_label.configure(text="Остановка процессов...", text_color="orange")
+        self.start_btn.configure(state="disabled")
+
     def progress_hook(self, d):
+        if getattr(self, 'stop_requested', False): raise Exception("Процесс остановлен пользователем")
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate')
             if total:
@@ -406,58 +428,66 @@ class VideoApp(ctk.CTk):
         if not self.settings["save_path"]:
             path = filedialog.askdirectory()
             if not path: return
-            self.settings["save_path"] = path
+            self.settings["save_path"] = os.path.abspath(path)
             SettingsManager.save(self.settings)
         if self.settings["add_translation"] and not self.translation_file: return
         
+        self.stop_requested = False
+        self.is_downloading = True
+        self.start_btn.configure(text="Остановить", command=self.stop_process, fg_color="red", hover_color="darkred")
+        self.toggle_ui("disabled")
+        
         res_num = int(res_raw.split("p")[0])
         safe_title = "".join([c for c in self.video_title if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
-        
         base_name = f"{safe_title} {res_num}p.mp4"
         base_path = os.path.join(self.settings["save_path"], base_name)
         final_name = f"{safe_title} {res_num}p (переведен).mp4" if self.settings["add_translation"] else base_name
         final_path = os.path.join(self.settings["save_path"], final_name)
 
-        if os.path.exists(final_path) and not messagebox.askyesno("Файл есть", f"Перезаписать {final_name}?"): return
+        if os.path.exists(final_path) and not messagebox.askyesno("Файл есть", f"Перезаписать {final_name}?"): 
+            self.restore_ui_state()
+            return
         
         skip_download = False
         if self.settings["add_translation"] and os.path.exists(base_path):
             if messagebox.askyesno("Найдено видео", "Использовать скачанный оригинал?"): skip_download = True
 
-        self.toggle_ui("disabled")
         threading.Thread(target=self.work, args=(url, skip_download, base_path, final_path, final_name, res_num), daemon=True).start()
+
+    def restore_ui_state(self):
+        self.is_downloading = False
+        self.progress_bar.set(0)
+        self.percent_label.configure(text="0%")
+        self.start_btn.configure(text="Скачать и склеить" if self.settings.get("add_translation") else "Скачать", 
+                                 command=self.start_process, fg_color="green", hover_color="darkgreen", state="normal")
+        self.toggle_ui("normal")
+
+    def show_success_dialog(self, final_path):
+        self.status_label.configure(text="✅ Готово", text_color="green")
+        if messagebox.askyesno("Успех", f"Видео успешно сохранено:\n{os.path.basename(final_path)}\n\nОткрыть папку с файлом?"):
+            path = os.path.abspath(final_path)
+            if platform.system() == "Windows":
+                subprocess.run(['explorer', '/select,', path])
+            elif platform.system() == "Darwin":
+                subprocess.run(['open', '-R', path])
+            else:
+                subprocess.run(['xdg-open', os.path.dirname(path)])
 
     def work(self, url, skip_download, base_path, final_path, final_name, res_num):
         try:
-            MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854}
-            max_dim = MAX_DIMS.get(res_num, 1920)
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
-            
             if not skip_download:
                 self.after(0, lambda: self.status_label.configure(text="Скачивание...", text_color="black"))
                 self.last_percent = -1
-                ydl_opts = {
-                    'format': f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                    'outtmpl': temp_video, 
-                    'progress_hooks': [self.progress_hook], 
-                    'quiet': True, 
-                    'noprogress': True,
-                    'noplaylist': True,
-                    
-                    # --- АНТИ-VPN НАСТРОЙКИ ---
-                    'retries': 20,
-                    'fragment_retries': 20,
-                    'socket_timeout': 30,
-                    'nocheckcertificate': True,
-                    'source_address': '0.0.0.0',
-                    'geo_bypass': True,
-                    
-                    # --- ФИКС ДЛЯ MACOS ---
-                    'ffmpeg_location': self.ffmpeg_path  # <--- Указываем yt-dlp, где лежит наше ядро
-                }
+                ydl_opts = {'format': f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                            'outtmpl': temp_video, 'progress_hooks': [self.progress_hook], 'quiet': True, 'noprogress': True,
+                            'noplaylist': True, 'retries': 20, 'fragment_retries': 20, 'socket_timeout': 30,
+                            'nocheckcertificate': True, 'source_address': '0.0.0.0', 'geo_bypass': True, 'ffmpeg_location': self.ffmpeg_path}
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
                 if os.path.exists(base_path): os.remove(base_path)
                 os.rename(temp_video, base_path)
+
+            if getattr(self, 'stop_requested', False): raise Exception("Процесс остановлен пользователем")
 
             if self.settings["add_translation"]:
                 self.after(0, lambda: self.status_label.configure(text="Склейка (FFmpeg)...", text_color="black"))
@@ -467,15 +497,15 @@ class VideoApp(ctk.CTk):
                        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
                 subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            self.after(0, lambda: self.status_label.configure(text=f"✅ Готово: {final_name}", text_color="green"))
-            messagebox.showinfo("Успех", f"Файл сохранен в:\n{final_path}")
+            self.after(0, lambda: self.show_success_dialog(final_path))
             
         except Exception as e: 
-            # Теперь программа покажет всплывающее окно с точной причиной сбоя
-            self.after(0, lambda: self.status_label.configure(text="❌ Ошибка обработки", text_color="red"))
-            self.after(0, lambda err=e: messagebox.showerror("Ошибка", f"Процесс прерван:\n\n{err}"))
+            err_msg = str(e)
+            self.after(0, lambda: self.status_label.configure(text="⏹ Загрузка отменена" if "остановлен" in err_msg else "❌ Ошибка", text_color="orange" if "остановлен" in err_msg else "red"))
+            if "остановлен" not in err_msg: self.after(0, lambda err=err_msg: messagebox.showerror("Ошибка", f"Процесс прерван:\n\n{err}"))
         finally:
-            self.after(0, lambda: (self.progress_bar.set(0), self.percent_label.configure(text="0%", text_color="black"), self.toggle_ui("normal")))
+            self.clean_temp_files()
+            self.after(0, self.restore_ui_state)
 
 if __name__ == "__main__":
     app = VideoApp()
