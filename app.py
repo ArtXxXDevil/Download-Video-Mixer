@@ -222,7 +222,7 @@ class VideoApp(ctk.CTk):
     # --- ИСПРАВЛЕННАЯ ЛОГИКА АВТОЗАГРУЗКИ FFMPEG ---
     def check_and_download_ffmpeg(self):
         if os.path.exists(self.ffmpeg_path):
-            self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="white"))
+            self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
             self.after(0, lambda: self.toggle_ui("normal"))
             return
 
@@ -266,7 +266,7 @@ class VideoApp(ctk.CTk):
                 st = os.stat(self.ffmpeg_path)
                 os.chmod(self.ffmpeg_path, st.st_mode | stat.S_IEXEC)
 
-            self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="white"))
+            self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
             self.after(0, lambda: self.toggle_ui("normal"))
             
         except Exception as e:
@@ -433,30 +433,35 @@ class VideoApp(ctk.CTk):
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             
             if not skip_download:
-                self.after(0, lambda: self.status_label.configure(text="Скачивание..."))
+                self.after(0, lambda: self.status_label.configure(text="Скачивание...", text_color="black"))
                 self.last_percent = -1
                 ydl_opts = {
                     'format': f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
                     'outtmpl': temp_video, 'progress_hooks': [self.progress_hook], 'quiet': True, 'noprogress': True,
-                    'retries': 15, 'fragment_retries': 15, 'socket_timeout': 15
+                    'retries': 15, 'fragment_retries': 15, 'socket_timeout': 15,
+                    'nocheckcertificate': True # <-- ФИКС ДЛЯ MACOS: Отключаем проверку SSL при скачивании видео
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
                 if os.path.exists(base_path): os.remove(base_path)
                 os.rename(temp_video, base_path)
 
             if self.settings["add_translation"]:
-                self.after(0, lambda: self.status_label.configure(text="Склейка (FFmpeg)..."))
+                self.after(0, lambda: self.status_label.configure(text="Склейка (FFmpeg)...", text_color="black"))
                 v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
                 cmd = [self.ffmpeg_path, '-y', '-i', base_path, '-i', self.translation_file,
                        '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
                        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
                 subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            self.after(0, lambda: self.status_label.configure(text=f"✅ Готово: {final_name}"))
+            self.after(0, lambda: self.status_label.configure(text=f"✅ Готово: {final_name}", text_color="green"))
             messagebox.showinfo("Успех", f"Файл сохранен в:\n{final_path}")
-        except Exception as e: self.after(0, lambda: self.status_label.configure(text="❌ Ошибка"))
+            
+        except Exception as e: 
+            # Теперь программа покажет всплывающее окно с точной причиной сбоя
+            self.after(0, lambda: self.status_label.configure(text="❌ Ошибка обработки", text_color="red"))
+            self.after(0, lambda err=e: messagebox.showerror("Ошибка", f"Процесс прерван:\n\n{err}"))
         finally:
-            self.after(0, lambda: (self.progress_bar.set(0), self.percent_label.configure(text="0%"), self.toggle_ui("normal")))
+            self.after(0, lambda: (self.progress_bar.set(0), self.percent_label.configure(text="0%", text_color="black"), self.toggle_ui("normal")))
 
 if __name__ == "__main__":
     app = VideoApp()
