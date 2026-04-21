@@ -437,9 +437,18 @@ class VideoApp(ctk.CTk):
                 self.last_percent = -1
                 ydl_opts = {
                     'format': f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                    'outtmpl': temp_video, 'progress_hooks': [self.progress_hook], 'quiet': True, 'noprogress': True,
-                    'retries': 15, 'fragment_retries': 15, 'socket_timeout': 15,
-                    'nocheckcertificate': True # <-- ФИКС ДЛЯ MACOS: Отключаем проверку SSL при скачивании видео
+                    'outtmpl': temp_video, 
+                    'progress_hooks': [self.progress_hook], 
+                    'quiet': True, 
+                    'noprogress': True,
+                    
+                    # --- АНТИ-VPN НАСТРОЙКИ ---
+                    'retries': 20,                 # Увеличиваем число попыток
+                    'fragment_retries': 20,        # Если VPN "мигнет", качаем кусок заново
+                    'socket_timeout': 30,          # Ждем дольше, пока VPN прогрузит соединение
+                    'nocheckcertificate': True,    # Игнорируем подмену сертификатов от VPN
+                    'source_address': '0.0.0.0',   # ЖЕСТКО отключаем IPv6, используем только IPv4
+                    'geo_bypass': True             # Включаем встроенный обход гео-ограничений
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
                 if os.path.exists(base_path): os.remove(base_path)
