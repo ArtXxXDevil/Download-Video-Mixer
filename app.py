@@ -443,12 +443,15 @@ class VideoApp(ctk.CTk):
                     'noprogress': True,
                     
                     # --- АНТИ-VPN НАСТРОЙКИ ---
-                    'retries': 20,                 # Увеличиваем число попыток
-                    'fragment_retries': 20,        # Если VPN "мигнет", качаем кусок заново
-                    'socket_timeout': 30,          # Ждем дольше, пока VPN прогрузит соединение
-                    'nocheckcertificate': True,    # Игнорируем подмену сертификатов от VPN
-                    'source_address': '0.0.0.0',   # ЖЕСТКО отключаем IPv6, используем только IPv4
-                    'geo_bypass': True             # Включаем встроенный обход гео-ограничений
+                    'retries': 20,
+                    'fragment_retries': 20,
+                    'socket_timeout': 30,
+                    'nocheckcertificate': True,
+                    'source_address': '0.0.0.0',
+                    'geo_bypass': True,
+                    
+                    # --- ФИКС ДЛЯ MACOS ---
+                    'ffmpeg_location': self.ffmpeg_path  # <--- Указываем yt-dlp, где лежит наше ядро
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
                 if os.path.exists(base_path): os.remove(base_path)
