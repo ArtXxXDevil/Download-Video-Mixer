@@ -1,6 +1,7 @@
 # 🎬 Download Video Mixer
 
-<img width="998" height="596" alt="Screenshot" src="https://github.com/user-attachments/assets/518c6518-4239-4b68-a667-dd3cc015dc64" />
+<img width="1051" height="601" alt="image" src="https://github.com/user-attachments/assets/686d31d9-c4bd-46ab-996c-59f449e6f92b" />
+
 
 **Download Video Mixer** — это удобное кроссплатформенное десктопное приложение для скачивания видео в высоком качестве и автоматического наложения дополнительных аудиодорожек (например, профессионального или машинного перевода).
 
