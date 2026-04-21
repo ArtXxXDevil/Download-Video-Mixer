@@ -11,6 +11,7 @@ import urllib.request
 import zipfile
 import stat
 import shutil # Добавлен для безопасного скачивания
+import ssl
 
 # --- ПОРТАТИВНАЯ ЛОГИКА ПУТЕЙ ---
 if getattr(sys, 'frozen', False):
@@ -237,9 +238,16 @@ class VideoApp(ctk.CTk):
 
             zip_path = os.path.join(APP_DIR, "ffmpeg_temp.zip")
             
-            # Притворяемся браузером, чтобы сервера нас не заблокировали
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-            with urllib.request.urlopen(req) as response, open(zip_path, 'wb') as out_file:
+            # Создаем контекст, игнорирующий строгую проверку SSL (специально для macOS)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            # Притворяемся браузером
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'})
+            
+            # Добавляем context=ctx в запрос
+            with urllib.request.urlopen(req, context=ctx) as response, open(zip_path, 'wb') as out_file:
                 shutil.copyfileobj(response, out_file)
 
             # Распаковываем нужный файл
@@ -265,7 +273,7 @@ class VideoApp(ctk.CTk):
             self.after(0, lambda: self.status_label.configure(text="❌ Ошибка установки FFmpeg", text_color="red"))
             self.after(0, lambda err=e: messagebox.showerror(
                 "Ошибка загрузки", 
-                f"Не удалось скачать ядро FFmpeg автоматически.\n\nДетали ошибки:\n{err}\n\nВы можете скачать ffmpeg.exe вручную и положить его в ту же папку, где находится эта программа."
+                f"Не удалось скачать ядро FFmpeg автоматически.\n\nДетали ошибки:\n{err}\n\nВы можете скачать файл {self.ffmpeg_exe_name} вручную и положить его в ту же папку, где находится эта программа."
             ))
 
     # --- ОСТАЛЬНАЯ ЛОГИКА ---
