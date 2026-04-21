@@ -353,7 +353,8 @@ class VideoApp(ctk.CTk):
 
     def fetch_info(self, url):
         try:
-            with yt_dlp.YoutubeDL({'quiet': True, 'nocheckcertificate': True}) as ydl:
+            # Добавили 'noplaylist': True
+            with yt_dlp.YoutubeDL({'quiet': True, 'nocheckcertificate': True, 'noplaylist': True}) as ydl:
                 info = ydl.extract_info(url, download=False)
                 self.video_title = info.get('title', 'video')
                 formats = info.get('formats', [])
@@ -441,6 +442,7 @@ class VideoApp(ctk.CTk):
                     'progress_hooks': [self.progress_hook], 
                     'quiet': True, 
                     'noprogress': True,
+                    'noplaylist': True,
                     
                     # --- АНТИ-VPN НАСТРОЙКИ ---
                     'retries': 20,
