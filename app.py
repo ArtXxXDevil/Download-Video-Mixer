@@ -1,6 +1,5 @@
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, Menu
-import yt_dlp
 import subprocess
 import threading
 import os
@@ -12,6 +11,7 @@ import zipfile
 import stat
 import shutil
 import ssl
+import re # Новый модуль для поиска процентов в тексте консоли
 
 # --- ПОРТАТИВНАЯ ЛОГИКА ПУТЕЙ ---
 if getattr(sys, 'frozen', False):
@@ -65,7 +65,6 @@ class SettingsWindow(ctk.CTkToplevel):
         self.grab_set()
         self.focus_set()
 
-        # Ставим иконку с задержкой в 250мс, чтобы система успела полностью отрисовать окно
         if getattr(parent, 'icon_path', None):
             self.after(250, lambda: self.wm_iconbitmap(parent.icon_path))
 
@@ -132,7 +131,7 @@ class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("Download Video Mixer v1.2")
+        self.title("Download Video Mixer v2.0 (Core)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -161,15 +160,31 @@ class VideoApp(ctk.CTk):
         x = int((screen_width / 2) - (window_width / 2))
         y = int((screen_height / 2) - (window_height / 2))
         self.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        
         self.resizable(False, False)
         
         self.settings = SettingsManager.load()
         self.translation_file = None
         self.video_title = "video"
+        self.last_percent = -1
         
-        self.ffmpeg_exe_name = "ffmpeg.exe" if self.os_name == "Windows" else "ffmpeg"
+        # Настройка путей для двух ядер (FFmpeg и yt-dlp)
+        if self.os_name == "Windows":
+            self.ffmpeg_exe_name = "ffmpeg.exe"
+            self.ytdlp_exe_name = "yt-dlp.exe"
+            self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        else:
+            self.ffmpeg_exe_name = "ffmpeg"
+            self.ytdlp_exe_name = "yt-dlp"
+            self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+            
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
+        self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
+
+        # Конфигурация для скрытия консоли Windows при вызове subprocess
+        self.startupinfo = None
+        if self.os_name == "Windows":
+            self.startupinfo = subprocess.STARTUPINFO()
+            self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
         # --- UI ---
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -203,7 +218,6 @@ class VideoApp(ctk.CTk):
         self.res_label = ctk.CTkLabel(self, text="Качество видео:")
         self.res_label.pack()
         
-        # Заблокировано по умолчанию, пока нет ссылки
         self.res_combobox = ctk.CTkComboBox(self, values=["Нет данных"], state="disabled", width=200)
         self.res_combobox.pack(pady=5)
 
@@ -223,19 +237,19 @@ class VideoApp(ctk.CTk):
         self.start_btn = ctk.CTkButton(self, text="Скачать", command=self.start_process, fg_color="green", height=40)
         self.start_btn.pack(pady=10)
 
-        self.status_label = ctk.CTkLabel(self, text="Проверка ядра...", text_color="orange")
+        self.status_label = ctk.CTkLabel(self, text="Проверка ядер (FFmpeg и yt-dlp)...", text_color="orange")
         self.status_label.pack()
 
         self.refresh_settings()
         self.last_url = ""
-        self.last_percent = -1
         
         self.toggle_ui("disabled")
-        threading.Thread(target=self.check_and_download_ffmpeg, daemon=True).start()
+        threading.Thread(target=self.check_dependencies, daemon=True).start()
 
+    # --- ЛОГИКА ЭКСТРЕННОГО ВЫХОДА И ОЧИСТКИ ---
     def on_closing(self):
         if self.is_downloading:
-            if messagebox.askyesno("Подтверждение", "Процесс скачивания еще не завершен.\n\nВы уверены, что хотите прервать его и закрыть программу?"):
+            if messagebox.askyesno("Подтверждение", "Процесс скачивания активен.\n\nПрервать и закрыть программу?"):
                 self.stop_requested = True
                 self.status_label.configure(text="Очистка кэша и выход...", text_color="orange")
                 self.attributes('-disabled', True) 
@@ -253,51 +267,65 @@ class VideoApp(ctk.CTk):
         if save_dir and os.path.exists(save_dir):
             for file_name in os.listdir(save_dir):
                 if file_name.startswith("temp_v"):
-                    try:
-                        os.remove(os.path.join(save_dir, file_name))
-                    except Exception:
-                        pass
+                    try: os.remove(os.path.join(save_dir, file_name))
+                    except: pass
 
-    def check_and_download_ffmpeg(self):
-        if os.path.exists(self.ffmpeg_path):
-            self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
-            self.after(0, lambda: self.toggle_ui("normal"))
-            return
+    # --- ЗАГРУЗКА И ОБНОВЛЕНИЕ ЯДЕР (V2.0) ---
+    def check_dependencies(self):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        headers = {'User-Agent': 'Mozilla/5.0'}
 
-        self.after(0, lambda: self.status_label.configure(text="Загрузка FFmpeg (около 35-80 МБ)... Ждите", text_color="orange"))
-        
+        # Проверка и скачивание yt-dlp
+        if not os.path.exists(self.ytdlp_path):
+            self.after(0, lambda: self.status_label.configure(text="Скачивание загрузчика yt-dlp...", text_color="orange"))
+            try:
+                req = urllib.request.Request(self.ytdlp_url, headers=headers)
+                with urllib.request.urlopen(req, context=ctx) as response, open(self.ytdlp_path, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+                if self.os_name != "Windows":
+                    os.chmod(self.ytdlp_path, os.stat(self.ytdlp_path).st_mode | stat.S_IEXEC)
+            except Exception as e:
+                self.after(0, lambda: self.status_label.configure(text="❌ Ошибка скачивания yt-dlp", text_color="red"))
+                return
+
+        # Проверка и скачивание FFmpeg
+        if not os.path.exists(self.ffmpeg_path):
+            self.after(0, lambda: self.status_label.configure(text="Скачивание ядра FFmpeg...", text_color="orange"))
+            try:
+                url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" if self.os_name == "Windows" else "https://evermeet.cx/ffmpeg/getrelease/zip"
+                zip_path = os.path.join(APP_DIR, "ffmpeg_temp.zip")
+                
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, context=ctx) as response, open(zip_path, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    for file_info in zip_ref.infolist():
+                        if file_info.filename.endswith(self.ffmpeg_exe_name):
+                            with zip_ref.open(file_info) as source, open(self.ffmpeg_path, "wb") as target:
+                                target.write(source.read())
+                            break
+                if os.path.exists(zip_path): os.remove(zip_path)
+                if self.os_name != "Windows":
+                    os.chmod(self.ffmpeg_path, os.stat(self.ffmpeg_path).st_mode | stat.S_IEXEC)
+            except Exception as e:
+                self.after(0, lambda: self.status_label.configure(text="❌ Ошибка установки FFmpeg", text_color="red"))
+                return
+
+        # Фоновое обновление yt-dlp
+        self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
         try:
-            url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" if self.os_name == "Windows" else "https://evermeet.cx/ffmpeg/getrelease/zip"
-            zip_path = os.path.join(APP_DIR, "ffmpeg_temp.zip")
-            
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+            kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+            subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+        except:
+            pass # Если не обновилось - не страшно, работаем на старом
 
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'})
-            with urllib.request.urlopen(req, context=ctx) as response, open(zip_path, 'wb') as out_file:
-                shutil.copyfileobj(response, out_file)
+        self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
+        self.after(0, lambda: self.toggle_ui("normal"))
 
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                for file_info in zip_ref.infolist():
-                    if file_info.filename.endswith(self.ffmpeg_exe_name):
-                        with zip_ref.open(file_info) as source, open(self.ffmpeg_path, "wb") as target:
-                            target.write(source.read())
-                        break
-            
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
-
-            if self.os_name != "Windows":
-                os.chmod(self.ffmpeg_path, os.stat(self.ffmpeg_path).st_mode | stat.S_IEXEC)
-
-            self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
-            self.after(0, lambda: self.toggle_ui("normal"))
-            
-        except Exception as e:
-            self.after(0, lambda: self.status_label.configure(text="❌ Ошибка установки FFmpeg", text_color="red"))
-            self.after(0, lambda err=e: messagebox.showerror("Ошибка загрузки", f"Не удалось скачать ядро FFmpeg.\n\nДетали: {err}"))
-
+    # --- UI МЕТОДЫ И ГОРЯЧИЕ КЛАВИШИ ---
     def show_context_menu(self, event):
         self.context_menu.tk_popup(event.x_root, event.y_root)
 
@@ -335,14 +363,11 @@ class VideoApp(ctk.CTk):
     def toggle_ui(self, state):
         self.url_entry.configure(state=state)
         self.settings_btn.configure(state=state)
-        
         if self.settings.get("add_translation"): 
             self.file_btn.configure(state=state)
-            
         if state == "disabled":
             self.res_combobox.configure(state="disabled")
         else:
-            # Делаем поле только для чтения (нельзя вписать свой текст), если в нем есть реальные данные
             if self.res_combobox.cget("values") != ["Нет данных"]:
                 self.res_combobox.configure(state="readonly")
 
@@ -357,6 +382,7 @@ class VideoApp(ctk.CTk):
 
     def open_settings(self): SettingsWindow(self)
 
+    # --- АНАЛИЗ ВИДЕО (Subprocess V2.0) ---
     def get_standard_res(self, w, h):
         max_dim = max(w, h)
         res_map = {7680: 4320, 3840: 2160, 2560: 1440, 1920: 1080, 1280: 720, 854: 480, 640: 360, 426: 240}
@@ -369,31 +395,39 @@ class VideoApp(ctk.CTk):
         if url == self.last_url or len(url) < 10: return
         self.last_url = url
         self.res_combobox.configure(state="disabled")
-        self.status_label.configure(text="Анализ ссылки...")
+        self.status_label.configure(text="Анализ ссылки...", text_color="black")
         threading.Thread(target=self.fetch_info, args=(url,), daemon=True).start()
 
     def fetch_info(self, url):
         try:
-            with yt_dlp.YoutubeDL({'quiet': True, 'nocheckcertificate': True, 'noplaylist': True}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                self.video_title = info.get('title', 'video')
-                formats = info.get('formats', [])
-                valid_resolutions = {} 
-                for f in formats:
-                    w, h, fps = f.get('width', 0), f.get('height', 0), f.get('fps', 0)
-                    if w and h:
-                        std_res = self.get_standard_res(w, h)
-                        if std_res >= 240:
-                            if std_res not in valid_resolutions or (fps and fps > valid_resolutions.get(std_res, 0)):
-                                valid_resolutions[std_res] = fps if fps else 30
-                heights = sorted(list(valid_resolutions.keys()), reverse=True)
-                if heights:
-                    res_values = [f"{h}p{str(int(valid_resolutions[h])) if valid_resolutions[h] > 30 else ''}{' 8K' if h >= 4320 else ' 4K' if h >= 2160 else ' HD' if h >= 1080 else ''}" for h in heights]
-                    self.after(0, lambda: self.update_res_list(res_values))
-        except: self.after(0, lambda: self.status_label.configure(text="❌ Ошибка анализа"))
+            cmd = [self.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', url]
+            kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+            
+            # Спрашиваем инфу у внешнего ядра
+            process = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+            if process.returncode != 0:
+                raise Exception("Ошибка yt-dlp")
+                
+            info = json.loads(process.stdout)
+            self.video_title = info.get('title', 'video')
+            formats = info.get('formats', [])
+            
+            valid_resolutions = {} 
+            for f in formats:
+                w, h, fps = f.get('width', 0), f.get('height', 0), f.get('fps', 0)
+                if w and h:
+                    std_res = self.get_standard_res(w, h)
+                    if std_res >= 240:
+                        if std_res not in valid_resolutions or (fps and fps > valid_resolutions.get(std_res, 0)):
+                            valid_resolutions[std_res] = fps if fps else 30
+            heights = sorted(list(valid_resolutions.keys()), reverse=True)
+            if heights:
+                res_values = [f"{h}p{str(int(valid_resolutions[h])) if valid_resolutions[h] > 30 else ''}{' 8K' if h >= 4320 else ' 4K' if h >= 2160 else ' HD' if h >= 1080 else ''}" for h in heights]
+                self.after(0, lambda: self.update_res_list(res_values))
+        except: 
+            self.after(0, lambda: self.status_label.configure(text="❌ Ошибка анализа", text_color="red"))
 
     def update_res_list(self, values):
-        # При получении данных переводим в readonly
         self.res_combobox.configure(values=values, state="readonly")
         self.res_combobox.set(values[0])
         self.status_label.configure(text="✅ Качество выбрано", text_color="green")
@@ -409,16 +443,12 @@ class VideoApp(ctk.CTk):
         self.status_label.configure(text="Остановка процессов...", text_color="orange")
         self.start_btn.configure(state="disabled")
 
-    def progress_hook(self, d):
-        if getattr(self, 'stop_requested', False): raise Exception("Процесс остановлен пользователем")
-        if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate')
-            if total:
-                percent = d.get('downloaded_bytes', 0) / total
-                percent_int = int(percent * 100)
-                if percent_int > self.last_percent:
-                    self.last_percent = percent_int
-                    self.after(0, lambda p=percent: (self.progress_bar.set(p), self.percent_label.configure(text=f"{int(p*100)}%")))
+    def update_progress_ui(self, percent):
+        percent_int = int(percent)
+        if percent_int > self.last_percent:
+            self.last_percent = percent_int
+            self.progress_bar.set(percent / 100.0)
+            self.percent_label.configure(text=f"{percent_int}%")
 
     def start_process(self):
         url = self.url_entry.get().strip()
@@ -434,6 +464,7 @@ class VideoApp(ctk.CTk):
         
         self.stop_requested = False
         self.is_downloading = True
+        self.last_percent = -1
         self.start_btn.configure(text="Остановить", command=self.stop_process, fg_color="red", hover_color="darkred")
         self.toggle_ui("disabled")
         
@@ -473,17 +504,48 @@ class VideoApp(ctk.CTk):
             else:
                 subprocess.run(['xdg-open', os.path.dirname(path)])
 
+    # --- ЗАГРУЗКА И СКЛЕЙКА (Subprocess V2.0) ---
     def work(self, url, skip_download, base_path, final_path, final_name, res_num):
+        process = None
         try:
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
+            
             if not skip_download:
                 self.after(0, lambda: self.status_label.configure(text="Скачивание...", text_color="black"))
-                self.last_percent = -1
-                ydl_opts = {'format': f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                            'outtmpl': temp_video, 'progress_hooks': [self.progress_hook], 'quiet': True, 'noprogress': True,
-                            'noplaylist': True, 'retries': 20, 'fragment_retries': 20, 'socket_timeout': 30,
-                            'nocheckcertificate': True, 'source_address': '0.0.0.0', 'geo_bypass': True, 'ffmpeg_location': self.ffmpeg_path}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
+                
+                cmd = [
+                    self.ytdlp_path,
+                    '-f', f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                    '-o', temp_video,
+                    '--newline',               # Выдавать прогресс построчно (нужно для парсинга)
+                    '--no-playlist', 
+                    '--retries', '20', 
+                    '--fragment-retries', '20',
+                    '--no-check-certificate',
+                    '--ffmpeg-location', self.ffmpeg_path,
+                    url
+                ]
+                
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                
+                # Запускаем скрытый процесс и читаем его вывод
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs)
+                
+                for line in process.stdout:
+                    if self.stop_requested:
+                        process.terminate()
+                        raise Exception("Процесс остановлен пользователем")
+                        
+                    # Ищем строку с прогрессом, например: [download]  45.0% of 1.25GiB
+                    match = re.search(r'\[download\]\s+([\d\.]+)%', line)
+                    if match:
+                        percent = float(match.group(1))
+                        self.after(0, self.update_progress_ui, percent)
+                        
+                process.wait()
+                if process.returncode != 0 and not self.stop_requested:
+                    raise Exception("Ошибка скачивания. Возможно, требуется включить VPN или подождать.")
+
                 if os.path.exists(base_path): os.remove(base_path)
                 os.rename(temp_video, base_path)
 
@@ -492,14 +554,18 @@ class VideoApp(ctk.CTk):
             if self.settings["add_translation"]:
                 self.after(0, lambda: self.status_label.configure(text="Склейка (FFmpeg)...", text_color="black"))
                 v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
-                cmd = [self.ffmpeg_path, '-y', '-i', base_path, '-i', self.translation_file,
+                cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', self.translation_file,
                        '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
                        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                subprocess.run(cmd_ffmpeg, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
 
             self.after(0, lambda: self.show_success_dialog(final_path))
             
-        except Exception as e: 
+        except Exception as e:
+            if process and process.poll() is None:
+                process.terminate() # Жестко добиваем зависший процесс
             err_msg = str(e)
             self.after(0, lambda: self.status_label.configure(text="⏹ Загрузка отменена" if "остановлен" in err_msg else "❌ Ошибка", text_color="orange" if "остановлен" in err_msg else "red"))
             if "остановлен" not in err_msg: self.after(0, lambda err=err_msg: messagebox.showerror("Ошибка", f"Процесс прерван:\n\n{err}"))
