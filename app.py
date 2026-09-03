@@ -13,7 +13,6 @@ import shutil
 import ssl
 import re
 
-# --- ПОРТАТИВНАЯ ЛОГИКА ПУТЕЙ ---
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
@@ -71,7 +70,7 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkLabel(self, text="Параметры аудио", font=("Arial", 16, "bold")).pack(pady=(10, 5))
 
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
-        self.check_trans = ctk.CTkCheckBox(self, text="Добавить аудиодорожку с переводом", variable=self.trans_var)
+        self.check_trans = ctk.CTkCheckBox(self, text="Добавить аудиодорожку с переводом", variable=self.trans_var, command=self.toggle_sliders)
         self.check_trans.pack(pady=5)
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
@@ -91,6 +90,13 @@ class SettingsWindow(ctk.CTkToplevel):
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
         ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5)
+
+        self.toggle_sliders()
+
+    def toggle_sliders(self):
+        state = "normal" if self.trans_var.get() else "disabled"
+        self.slider_vol1.configure(state=state)
+        self.slider_vol2.configure(state=state)
 
     def update_labels(self, _=None):
         self.lbl_vol1.configure(text=f"Громкость оригинала: {int(self.slider_vol1.get())}%")
@@ -117,7 +123,6 @@ class SettingsWindow(ctk.CTkToplevel):
         self.destroy()
 
 
-# --- ОКНО ВЫБОРА ВИДЕО ИЗ ПЛЕЙЛИСТА ---
 class PlaylistDialog(ctk.CTkToplevel):
     def __init__(self, parent, videos):
         super().__init__(parent)
@@ -137,16 +142,15 @@ class PlaylistDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(self, text="Выберите видео для загрузки:", font=("Arial", 14, "bold")).pack(pady=10)
         
-        # Общий скролл для видео
         self.scroll = ctk.CTkScrollableFrame(self, width=450, height=300)
         self.scroll.pack(pady=5, padx=10, fill="both", expand=True)
 
         self.checkboxes = []
         for vid in self.videos:
-            var = ctk.BooleanVar(value=True) # По умолчанию выбраны все
+            var = ctk.BooleanVar(value=True)
             title = vid.get('title', 'Без названия')
             duration = vid.get('duration', 0)
-            dur_str = f" ({duration//60}:{duration%60:02d})" if duration else ""
+            dur_str = f" ({int(duration)//60}:{int(duration)%60:02d})" if duration else ""
             
             cb = ctk.CTkCheckBox(self.scroll, text=f"{title}{dur_str}", variable=var)
             cb.pack(anchor="w", pady=2, padx=5)
@@ -168,40 +172,42 @@ class PlaylistDialog(ctk.CTkToplevel):
 
 # --- КАРТОЧКА ОТДЕЛЬНОГО ВИДЕО В ОЧЕРЕДИ ---
 class QueueItemWidget(ctk.CTkFrame):
-    def __init__(self, master, app, video_info, mode, res_num):
+    def __init__(self, master, app, video_info, mode, global_res_str):
         super().__init__(master)
         self.app = app
         self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={video_info.get('id')}"
         self.title_text = video_info.get('title', 'Видео')
         self.mode = mode
-        self.res_num = res_num
-        self.status = "waiting" # waiting, downloading, processing, done, error
+        self.status = "waiting"
         self.translation_path = None
         
-        # UI карточки
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
         top_frame.pack(fill="x", padx=5, pady=2)
         
-        # Название с ограничением длины
-        display_title = (self.title_text[:45] + '...') if len(self.title_text) > 45 else self.title_text
+        display_title = (self.title_text[:50] + '...') if len(self.title_text) > 50 else self.title_text
         self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"))
         self.lbl_title.pack(side="left")
         
         self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
         self.btn_remove.pack(side="right")
 
-        mid_frame = ctk.CTkFrame(self, fg_color="transparent")
-        mid_frame.pack(fill="x", padx=5)
+        self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.mid_frame.pack(fill="x", padx=5, pady=2)
 
-        # Индивидуальная кнопка перевода (если режим Видео и включено в настройках)
-        if mode == "Видео" and self.app.settings.get("add_translation"):
-            self.btn_audio = ctk.CTkButton(mid_frame, text="🎵 Добавить перевод", height=24, width=120, command=self.select_audio)
-            self.btn_audio.pack(side="left", pady=2)
+        # Выбор качества для конкретного видео
+        self.item_res_var = ctk.StringVar(value=global_res_str)
+        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["1080p HD", "720p HD", "480p SD", "360p", "4K (2160p)"], variable=self.item_res_var, width=110, height=24)
+        
+        if mode == "Только Аудио (MP3)":
+            ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11)).pack(side="left", padx=(0, 10))
         else:
-            badge_text = "Аудио (MP3)" if mode != "Видео" else f"Видео ({res_num}p)"
-            ctk.CTkLabel(mid_frame, text=f"[{badge_text}]", text_color="gray", font=("Arial", 10)).pack(side="left")
+            self.combo_res.pack(side="left", padx=(0, 10))
 
-        self.lbl_status = ctk.CTkLabel(mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
+        # Кнопка перевода
+        self.btn_audio = ctk.CTkButton(self.mid_frame, text="🎵 Добавить перевод", height=24, width=120, command=self.select_audio)
+        self.toggle_audio_btn(self.app.settings.get("add_translation"))
+
+        self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
         self.lbl_status.pack(side="right")
 
         bot_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -213,6 +219,14 @@ class QueueItemWidget(ctk.CTkFrame):
         
         self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
         self.lbl_percent.pack(side="right")
+
+    def toggle_audio_btn(self, show):
+        if show and self.mode == "Видео":
+            self.btn_audio.pack(side="left")
+        else:
+            self.btn_audio.pack_forget()
+            self.translation_path = None
+            self.btn_audio.configure(text="🎵 Добавить перевод", fg_color=["#3B8ED0", "#1F6AA5"])
 
     def select_audio(self):
         path = filedialog.askopenfilename(filetypes=[("Audio Files", "*.mp3 *.wav *.m4a")])
@@ -236,19 +250,19 @@ class QueueItemWidget(ctk.CTkFrame):
         self.app.queue_items.remove(self)
         self.pack_forget()
         self.destroy()
+        self.app.update_queue_status()
 
 
-# --- ОСНОВНОЕ ПРИЛОЖЕНИЕ ---
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.0 (Queue)")
+        self.title("Download Video Mixer v3.1")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
         self.stop_requested = False
         self.is_downloading = False
-        self.queue_items = [] # Хранилище объектов QueueItemWidget
+        self.queue_items = [] 
         
         def resource_path(relative_path):
             try: base_path = sys._MEIPASS
@@ -262,7 +276,6 @@ class VideoApp(ctk.CTk):
                 self.icon_path = icon_path
                 self.iconbitmap(icon_path)
         
-        # Окно стало выше для комфортной очереди
         self.geometry("650x600")
         
         self.settings = SettingsManager.load()
@@ -286,7 +299,6 @@ class VideoApp(ctk.CTk):
         threading.Thread(target=self.check_dependencies, daemon=True).start()
 
     def build_ui(self):
-        # Панель URL и добавления
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
         top_frame.pack(pady=10, padx=20, fill="x")
 
@@ -296,7 +308,6 @@ class VideoApp(ctk.CTk):
         self.url_entry = ctk.CTkEntry(top_frame, placeholder_text="Вставьте ссылку на видео или плейлист...", width=380)
         self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         
-        # Меню и Хоткеи
         self.context_menu = Menu(self, tearoff=0, font=("Arial", 10))
         self.context_menu.add_command(label="Вставить", command=self.paste_text)
         self.context_menu.add_command(label="Копировать", command=self.copy_text)
@@ -308,7 +319,6 @@ class VideoApp(ctk.CTk):
         self.btn_add = ctk.CTkButton(top_frame, text="Добавить", width=100, command=self.fetch_and_add)
         self.btn_add.pack(side="right")
 
-        # Панель параметров
         param_frame = ctk.CTkFrame(self, fg_color="transparent")
         param_frame.pack(pady=5)
         
@@ -316,16 +326,14 @@ class VideoApp(ctk.CTk):
         self.mode_seg = ctk.CTkSegmentedButton(param_frame, values=["Видео", "Только Аудио (MP3)"], variable=self.mode_var, command=self.on_mode_change)
         self.mode_seg.pack(side="left", padx=10)
         
-        # Статичный список качеств для мгновенного добавления
-        self.res_combobox = ctk.CTkComboBox(param_frame, values=["1080p HD", "720p HD", "480p SD", "360p", "4K (2160p)"], state="readonly", width=150)
-        self.res_combobox.pack(side="left", padx=10)
+        ctk.CTkLabel(param_frame, text="Глобальное качество:").pack(side="left", padx=(10, 5))
+        self.res_combobox = ctk.CTkComboBox(param_frame, values=["1080p HD", "720p HD", "480p SD", "360p", "4K (2160p)"], state="readonly", width=110)
+        self.res_combobox.pack(side="left", padx=5)
         self.res_combobox.set("1080p HD")
 
-        # ОЧЕРЕДЬ (Scrollable Frame)
         self.queue_frame = ctk.CTkScrollableFrame(self, width=600, height=300)
         self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
 
-        # Нижняя панель управления
         bot_frame = ctk.CTkFrame(self, fg_color="transparent")
         bot_frame.pack(pady=10)
 
@@ -335,7 +343,6 @@ class VideoApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(self, text="Ожидание ссылок...", text_color="gray")
         self.status_label.pack(pady=(0, 10))
 
-    # --- УПРАВЛЕНИЕ UI ---
     def paste_text(self, event=None):
         try:
             self.url_entry.delete(0, "end") 
@@ -366,10 +373,15 @@ class VideoApp(ctk.CTk):
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
+        show_audio = self.settings.get("add_translation")
+        # Интерактивное обновление кнопок на всех существующих карточках
+        for item in self.queue_items:
+            item.toggle_audio_btn(show_audio)
+
     def open_settings(self): SettingsWindow(self)
 
 
-    # --- ДОБАВЛЕНИЕ В ОЧЕРЕДЬ (Анализ Плейлистов) ---
+    # --- АНАЛИЗ И ЗАЩИТА ОТ ДУБЛЕЙ ---
     def fetch_and_add(self):
         url = self.url_entry.get().strip()
         if len(url) < 10: return
@@ -379,21 +391,31 @@ class VideoApp(ctk.CTk):
 
     def _analyze_url_thread(self, url):
         try:
-            # Используем --flat-playlist для мгновенного получения списка (без скачивания деталей форматов)
-            cmd = [self.ytdlp_path, '--dump-json', '--flat-playlist', '--no-check-certificate', url]
+            cmd = [self.ytdlp_path, '--dump-json', '--no-check-certificate']
+            
+            # Умное определение: видео или плейлист
+            if any(x in url for x in ["watch?v=", "youtu.be/", "shorts/"]):
+                cmd.append('--no-playlist')
+            else:
+                cmd.append('--flat-playlist')
+            
+            cmd.append(url)
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
             
-            process = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
-            if process.returncode != 0: raise Exception("Ошибка yt-dlp")
-                
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, **kwargs)
+            
             videos = []
-            for line in process.stdout.splitlines():
-                try: videos.append(json.loads(line))
+            # Потоковое чтение вывода для отображения прогресса парсинга
+            for line in process.stdout:
+                try:
+                    data = json.loads(line)
+                    videos.append(data)
+                    self.after(0, lambda c=len(videos): self.status_label.configure(text=f"Анализ... Найдено видео: {c}", text_color="black"))
                 except: pass
                 
-            if not videos: raise Exception("Видео не найдено")
+            process.wait()
+            if not videos: raise Exception("Видео не найдено или доступ закрыт.")
 
-            # Если это плейлист (больше 1 видео), показываем диалог выбора
             if len(videos) > 1:
                 self.after(0, lambda: PlaylistDialog(self, videos))
             else:
@@ -401,22 +423,39 @@ class VideoApp(ctk.CTk):
 
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("Ошибка", f"Не удалось проанализировать ссылку:\n{e}"))
+            self.after(0, lambda: self.status_label.configure(text="Ошибка анализа", text_color="red"))
         finally:
             self.after(0, lambda: self.btn_add.configure(state="normal", text="Добавить"))
             self.after(0, lambda: self.url_entry.delete(0, "end"))
 
     def add_items_to_queue(self, videos_list):
         mode = self.mode_var.get()
-        res_raw = self.res_combobox.get()
-        res_num = int(res_raw.split("p")[0]) if "p" in res_raw else 1080
+        global_res_str = self.res_combobox.get()
+        
+        existing_urls = set(item.url for item in self.queue_items)
+        added_count = 0
         
         for vid in videos_list:
-            item = QueueItemWidget(self.queue_frame, self, vid, mode, res_num)
+            vid_url = vid.get('url') or f"https://www.youtube.com/watch?v={vid.get('id')}"
+            if vid_url in existing_urls:
+                continue # Пропускаем дубликаты
+                
+            item = QueueItemWidget(self.queue_frame, self, vid, mode, global_res_str)
             item.pack(fill="x", pady=5)
             self.queue_items.append(item)
+            added_count += 1
+            
+        if added_count == 0 and videos_list:
+            self.status_label.configure(text="Все выбранные видео уже есть в очереди.", text_color="orange")
+        else:
+            self.update_queue_status()
+
+    def update_queue_status(self):
+        total = len(self.queue_items)
+        self.status_label.configure(text=f"В очереди: {total} видео.", text_color="black")
 
 
-    # --- ЛОГИКА ОБРАБОТКИ ОЧЕРЕДИ ---
+    # --- ЗАПУСК ОЧЕРЕДИ ---
     def stop_process(self):
         self.stop_requested = True
         self.status_label.configure(text="Остановка текущей загрузки...", text_color="orange")
@@ -446,7 +485,6 @@ class VideoApp(ctk.CTk):
             if item.status == "waiting" or item.status == "error":
                 self.download_item(item)
                 
-        # По завершении очереди (или при остановке)
         self.after(0, self.restore_ui_state)
         
     def download_item(self, item):
@@ -458,17 +496,20 @@ class VideoApp(ctk.CTk):
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
             
+            # Достаем индивидуальное разрешение из карточки видео
+            res_raw = item.item_res_var.get()
+            res_num = int(res_raw.split("p")[0]) if "p" in res_raw else 1080
+            
             if is_audio:
                 base_name = f"{safe_title}.mp3"
                 final_name = base_name
             else:
-                base_name = f"{safe_title} {item.res_num}p.mp4"
-                final_name = f"{safe_title} {item.res_num}p (переведен).mp4" if item.translation_path else base_name
+                base_name = f"{safe_title} {res_num}p.mp4"
+                final_name = f"{safe_title} {res_num}p (переведен).mp4" if item.translation_path else base_name
                 
             base_path = os.path.join(self.settings["save_path"], base_name)
             final_path = os.path.join(self.settings["save_path"], final_name)
 
-            # Пропуск, если файл уже есть
             if os.path.exists(final_path):
                 item.status = "done"
                 self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
@@ -478,8 +519,7 @@ class VideoApp(ctk.CTk):
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
             
-            # --- СКАЧИВАНИЕ ---
-            if not (not is_audio and item.translation_path and os.path.exists(base_path)): # Условие: если оригинал уже скачан, пропускаем
+            if not (not is_audio and item.translation_path and os.path.exists(base_path)): 
                 if is_audio:
                     cmd = [
                         self.ytdlp_path, '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
@@ -489,7 +529,7 @@ class VideoApp(ctk.CTk):
                     ]
                 else:
                     MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
-                    max_dim = MAX_DIMS.get(item.res_num, 1920)
+                    max_dim = MAX_DIMS.get(res_num, 1920)
                     cmd = [
                         self.ytdlp_path, '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
                         '-o', temp_video, '--newline', '--no-playlist', '--retries', '20', '--fragment-retries', '20',
@@ -523,7 +563,6 @@ class VideoApp(ctk.CTk):
 
             if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
 
-            # --- СКЛЕЙКА ПЕРЕВОДА ---
             if not is_audio and item.translation_path:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Склейка...", "orange"))
@@ -551,17 +590,15 @@ class VideoApp(ctk.CTk):
         self.is_downloading = False
         self.start_btn.configure(text="▶ Запустить очередь", command=self.start_queue, fg_color="green", hover_color="darkgreen", state="normal")
         
-        # Подсчет результатов
         done = sum(1 for i in self.queue_items if i.status == "done")
         total = len(self.queue_items)
         
         if self.stop_requested:
-            self.status_label.configure(text=f"Очередь остановлена. Завершено: {done}/{total}")
+            self.status_label.configure(text=f"Очередь остановлена. Завершено: {done}/{total}", text_color="orange")
         elif done == total and total > 0:
-            self.status_label.configure(text="🎉 Все загрузки успешно завершены!")
-            # Убрали назойливое popup-окно для очереди, так как оно мешает при пакетной загрузке
+            self.status_label.configure(text="🎉 Все загрузки успешно завершены!", text_color="green")
         else:
-            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}")
+            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}", text_color="red")
             
         self.toggle_ui("normal")
 
