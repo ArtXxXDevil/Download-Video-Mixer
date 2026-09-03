@@ -189,7 +189,6 @@ class QueueItemWidget(ctk.CTkFrame):
         self.mode = mode
         self.status = "waiting" 
         
-        # Переменная для автоперевода Яндексом
         self.use_yandex_translation = False
         
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -209,7 +208,6 @@ class QueueItemWidget(ctk.CTkFrame):
         self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         
-        # Кнопка Яндекса
         self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Яндекс.Перевод", height=24, width=130, command=self.toggle_yandex)
 
         self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
@@ -236,7 +234,6 @@ class QueueItemWidget(ctk.CTkFrame):
             self.combo_res.pack(side="left", padx=(0, 10))
             self.btn_yandex.pack(side="left", padx=5)
             
-            # Применяем глобальную настройку Яндекса
             if self.app.settings.get("add_translation"):
                 self.use_yandex_translation = True
                 self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
@@ -305,7 +302,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.4 (Yandex Core)")
+        self.title("Download Video Mixer v3.4 (VOT-CLI Core)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -328,22 +325,21 @@ class VideoApp(ctk.CTk):
         self.geometry("650x600")
         self.settings = SettingsManager.load()
         
-        # Прописываем пути к 3 ядрам
+        # Интеграция правильных URL для FOSWLY/vot-cli (релизы с бинарниками)
         if self.os_name == "Windows":
             self.ffmpeg_exe_name = "ffmpeg.exe"
             self.ytdlp_exe_name = "yt-dlp.exe"
             self.vot_exe_name = "vot-cli.exe"
             
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            # Ссылка на бинарник vot-cli для Windows
-            self.vot_url = "https://github.com/ilyhalight/vot-cli/releases/latest/download/vot-cli-win.exe" 
+            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-cli-win.exe" 
         else:
             self.ffmpeg_exe_name = "ffmpeg"
             self.ytdlp_exe_name = "yt-dlp"
             self.vot_exe_name = "vot-cli"
             
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-            self.vot_url = "https://github.com/ilyhalight/vot-cli/releases/latest/download/vot-cli-macos"
+            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-cli-macos"
             
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
         self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
@@ -457,7 +453,6 @@ class VideoApp(ctk.CTk):
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
-        # Обновляем дефолтные состояния на карточках при смене настроек
         global_trans = self.settings.get("add_translation")
         for item in self.queue_items:
             if item.mode == "Видео":
@@ -625,17 +620,17 @@ class VideoApp(ctk.CTk):
     def download_item(self, item):
         process = None
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (ЯНДЕКС VOT-CLI)
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (FOSWLY VOT-CLI)
             actual_translation_path = None
             if item.mode == "Видео" and item.use_yandex_translation:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Яндекс переводит...", "purple"))
                 
                 translate_temp = os.path.join(self.settings["save_path"], f"temp_trans_{item.video_id}.mp3")
+                # FOSWLY/vot-cli использует флаг --output для указания пути
                 cmd_vot = [self.vot_path, item.url, '--output', translate_temp]
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 
-                # Запускаем vot-cli и ждем (он сам скачает mp3)
                 subprocess.run(cmd_vot, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
                 
                 if self.stop_requested: raise Exception("Остановлено")
@@ -675,7 +670,6 @@ class VideoApp(ctk.CTk):
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
             
-            # Пропускаем загрузку видео, если оригинал уже лежит на диске, а нам нужна только склейка
             if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
                 if is_audio:
                     cmd = [
@@ -760,7 +754,6 @@ class VideoApp(ctk.CTk):
             
         self.toggle_ui("normal")
 
-
     # --- ЯДРА И ВЫХОД ---
     def on_closing(self):
         if self.is_downloading:
@@ -790,7 +783,6 @@ class VideoApp(ctk.CTk):
         ctx.verify_mode = ssl.CERT_NONE
         headers = {'User-Agent': 'Mozilla/5.0'}
 
-        # Проверка 3 ядер
         dependencies = [
             (self.ytdlp_path, self.ytdlp_url, "yt-dlp"),
             (self.vot_path, self.vot_url, "vot-cli"),
@@ -819,20 +811,21 @@ class VideoApp(ctk.CTk):
                         with urllib.request.urlopen(req, context=ctx) as response, open(path, 'wb') as out_file:
                             shutil.copyfileobj(response, out_file)
                     
-                    if self.os_name !=Отличная идея. Выделение внешних зависимостей (таких как `vot-cli`) в отдельный самообновляемый модуль делает проект гораздо более независимым и удобным для конечного пользователя. 
+                    if self.os_name != "Windows": os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+                except Exception:
+                    self.after(0, lambda n=name: self.status_label.configure(text=f"❌ Ошибка скачивания {n}", text_color="red"))
+                    return
 
-Поскольку `vot-cli` часто распространяется в виде готовых бинарных файлов (релизов на GitHub) или npm-пакетов, я напишу для вас универсальный менеджер на **Python**, который будет:
-1. Проверять наличие установленной версии.
-2. Обращаться к API (например, GitHub) для проверки последней версии.
-3. Скачивать и распаковывать CLI, если его нет или вышла новая версия.
-4. Предоставлять удобный интерфейс для запуска.
+        self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
+        try:
+            kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+            subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+        except: pass
 
-### 1. Структура проекта
-Рекомендую организовать файлы следующим образом:
+        self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
+        self.after(0, lambda: self.toggle_ui("normal"))
 
-```text
-my_project/
-├── main.py
-└── modules/
-    ├── __init__.py
-    └── vot_manager.py      # Наш новый модуль для vot-cli
+
+if __name__ == "__main__":
+    app = VideoApp()
+    app.mainloop()
