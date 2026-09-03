@@ -204,10 +204,15 @@ class VideoApp(ctk.CTk):
         self.url_entry.bind("<Button-3>", self.show_context_menu)
         self.url_entry.bind("<Button-2>", self.show_context_menu)
 
-        # Только перехват кириллицы. Английский Ctrl+V теперь работает нативно!
-        key_cmd = "<Command-KeyPress>" if self.os_name == "Darwin" else "<Control-KeyPress>"
-        self.url_entry.bind(key_cmd, self.handle_cyrillic_hotkeys)
+        # --- ЖЕЛЕЗОБЕТОННЫЙ БИНДИНГ КИРИЛЛИЦЫ ---
+        ctrl_key = "Command" if self.os_name == "Darwin" else "Control"
         
+        # Явно прописываем строчные и заглавные буквы для надежности
+        for key in ('м', 'М'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.paste_text)
+        for key in ('с', 'С'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.copy_text)
+        for key in ('ч', 'Ч'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.cut_text)
+        for key in ('ф', 'Ф'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.select_all)
+
         self.res_label = ctk.CTkLabel(self, text="Качество видео:")
         self.res_label.pack()
         
@@ -315,14 +320,6 @@ class VideoApp(ctk.CTk):
 
     def show_context_menu(self, event):
         self.context_menu.tk_popup(event.x_root, event.y_root)
-
-    def handle_cyrillic_hotkeys(self, event):
-        # Отрабатывает только если нажата русская буква при зажатом Ctrl/Cmd
-        char = event.char.lower() if event.char else ""
-        if char == 'м': return self.paste_text()
-        elif char == 'с': return self.copy_text()
-        elif char == 'ч': return self.cut_text()
-        elif char == 'ф': return self.select_all()
 
     def paste_text(self, event=None):
         try:
@@ -497,15 +494,12 @@ class VideoApp(ctk.CTk):
         try:
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             
-            # --- ФИКС ДЛЯ SHORTS ---
             MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
             max_dim = MAX_DIMS.get(res_num, 1920)
             
             if not skip_download:
                 self.after(0, lambda: self.status_label.configure(text="Скачивание...", text_color="black"))
                 
-                # Теперь мы ограничиваем и ширину, и высоту. 
-                # Shorts (1080x1920) и обычное видео (1920x1080) теперь оба скачаются без ошибок!
                 cmd = [
                     self.ytdlp_path,
                     '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
