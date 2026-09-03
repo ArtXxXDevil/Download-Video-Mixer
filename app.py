@@ -305,7 +305,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.3")
+        self.title("Download Video Mixer v2.0")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
