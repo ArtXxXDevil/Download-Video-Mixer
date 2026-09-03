@@ -207,7 +207,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         
-        self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Яндекс.Перевод", height=24, width=130, command=self.toggle_yandex)
+        self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Перевод [ВКЛ]", height=24, width=130, command=self.toggle_yandex)
 
         self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
         self.lbl_status.pack(side="right")
@@ -231,14 +231,7 @@ class QueueItemWidget(ctk.CTkFrame):
         
         if self.mode == "Видео":
             self.combo_res.pack(side="left", padx=(0, 10))
-            self.btn_yandex.pack(side="left", padx=5)
-            
-            if self.app.settings.get("add_translation"):
-                self.use_yandex_translation = True
-                self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
-            else:
-                self.use_yandex_translation = False
-                self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
+            self.update_yandex_visibility(self.app.settings.get("add_translation"))
             
             if self.combo_res.cget("values") == ["4K (2160p)"] and self.status == "waiting":
                 self.status = "fetching_formats"
@@ -273,6 +266,23 @@ class QueueItemWidget(ctk.CTkFrame):
         if self.status == "fetching_formats":
             self.status = "waiting"
 
+    def update_yandex_visibility(self, global_trans):
+        if self.mode != "Видео":
+            self.btn_yandex.pack_forget()
+            return
+            
+        if global_trans:
+            # Если кнопка была спрятана, показываем её и ставим по умолчанию ВКЛ
+            if not self.btn_yandex.winfo_ismapped():
+                self.btn_yandex.pack(side="left", padx=5)
+                self.use_yandex_translation = True
+                self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+            # Если кнопка уже видна, мы её НЕ трогаем (сохраняем ручной выбор пользователя)
+        else:
+            # Настройка выключена -> прячем кнопку полностью
+            self.btn_yandex.pack_forget()
+            self.use_yandex_translation = False
+
     def toggle_yandex(self):
         if self.app.is_downloading: return
         self.use_yandex_translation = not self.use_yandex_translation
@@ -297,10 +307,11 @@ class QueueItemWidget(ctk.CTkFrame):
         self.destroy()
         self.app.update_queue_status()
 
+
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.4 (VOT-CLI Core)")
+        self.title("Download Video Mixer v3.5 (VOT-CLI Core Fixed)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -329,7 +340,6 @@ class VideoApp(ctk.CTk):
             self.vot_exe_name = "vot-cli.exe"
             
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            # Ссылка ведет на ZIP-архив с экзешником внутри
             self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-windows-x64.exe.zip" 
         else:
             self.ffmpeg_exe_name = "ffmpeg"
@@ -452,13 +462,9 @@ class VideoApp(ctk.CTk):
     def refresh_settings(self):
         self.settings = SettingsManager.load()
         global_trans = self.settings.get("add_translation")
+        # Теперь метод не сбрасывает индивидуальные кнопки, а лишь скрывает или показывает их
         for item in self.queue_items:
-            if item.mode == "Видео":
-                item.use_yandex_translation = global_trans
-                if global_trans:
-                    item.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
-                else:
-                    item.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
+            item.update_yandex_visibility(global_trans)
 
     def open_settings(self): SettingsWindow(self)
 
@@ -614,14 +620,16 @@ class VideoApp(ctk.CTk):
         
     def download_item(self, item):
         process = None
+        actual_translation_path = None
         try:
-            actual_translation_path = None
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (FOSWLY VOT-CLI)
             if item.mode == "Видео" and item.use_yandex_translation:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Яндекс переводит...", "purple"))
                 
-                translate_temp = os.path.join(self.settings["save_path"], f"temp_trans_{item.video_id}.mp3")
-                cmd_vot = [self.vot_path, item.url, '--output', translate_temp]
+                # FOSWLY vot-cli использует --outdir=Папка и сохраняет файл в формате {ID_видео}.mp3
+                translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
+                cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 
                 subprocess.run(cmd_vot, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
@@ -634,6 +642,7 @@ class VideoApp(ctk.CTk):
                     self.after(0, lambda: item.set_status("⚠️ Перевод не удался, качаю оригинал", "orange"))
                     time.sleep(1.5)
 
+            # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
             item.status = "downloading"
             self.after(0, lambda: item.set_status("Скачивание видео...", "blue"))
             
@@ -706,6 +715,7 @@ class VideoApp(ctk.CTk):
 
             if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
 
+            # 3. СКЛЕЙКА (FFMPEG)
             if not is_audio and actual_translation_path:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Склейка...", "orange"))
@@ -727,6 +737,10 @@ class VideoApp(ctk.CTk):
             err_msg = str(e)
             self.after(0, lambda: item.set_status("⏹ Остановлено" if "Остановлено" in err_msg else "❌ Ошибка", "red"))
         finally:
+            # Точечно подчищаем файл перевода, чтобы он не остался на диске
+            if actual_translation_path and os.path.exists(actual_translation_path):
+                try: os.remove(actual_translation_path)
+                except: pass
             self.clean_temp_files()
 
     def restore_ui_state(self):
@@ -798,14 +812,12 @@ class VideoApp(ctk.CTk):
                         if os.path.exists(zip_path): os.remove(zip_path)
                         
                     elif name == "vot-cli":
-                        # Загрузка архива для vot-cli и распаковка на лету
                         temp_path = os.path.join(APP_DIR, "vot_temp.tmp")
                         req = urllib.request.Request(url, headers=headers)
                         with urllib.request.urlopen(req, context=ctx) as response, open(temp_path, 'wb') as out_file:
                             shutil.copyfileobj(response, out_file)
                         
                         try:
-                            # Пытаемся распаковать (автор пакует релизы в .zip)
                             with zipfile.ZipFile(temp_path, 'r') as zip_ref:
                                 for file_info in zip_ref.infolist():
                                     if not file_info.filename.endswith('/') and "vot" in file_info.filename.lower():
@@ -813,7 +825,6 @@ class VideoApp(ctk.CTk):
                                             target.write(source.read())
                                         break
                         except zipfile.BadZipFile:
-                            # Если это не архив, а чистый исполняемый файл (fallback)
                             shutil.copyfile(temp_path, path)
                             
                         if os.path.exists(temp_path): os.remove(temp_path)
