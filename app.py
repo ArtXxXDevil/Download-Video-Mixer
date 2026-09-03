@@ -178,7 +178,6 @@ class PlaylistDialog(ctk.CTkToplevel):
         self.parent.add_items_to_queue(self.selected_videos)
         self.destroy()
 
-# --- КАРТОЧКА ОТДЕЛЬНОГО ВИДЕО В ОЧЕРЕДИ ---
 class QueueItemWidget(ctk.CTkFrame):
     def __init__(self, master, app, video_info, mode, global_res_str):
         super().__init__(master)
@@ -298,7 +297,6 @@ class QueueItemWidget(ctk.CTkFrame):
         self.destroy()
         self.app.update_queue_status()
 
-# --- ОСНОВНОЕ ПРИЛОЖЕНИЕ ---
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -325,21 +323,21 @@ class VideoApp(ctk.CTk):
         self.geometry("650x600")
         self.settings = SettingsManager.load()
         
-        # Интеграция правильных URL для FOSWLY/vot-cli (релизы с бинарниками)
         if self.os_name == "Windows":
             self.ffmpeg_exe_name = "ffmpeg.exe"
             self.ytdlp_exe_name = "yt-dlp.exe"
             self.vot_exe_name = "vot-cli.exe"
             
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-cli-win.exe" 
+            # Ссылка ведет на ZIP-архив с экзешником внутри
+            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-windows-x64.exe.zip" 
         else:
             self.ffmpeg_exe_name = "ffmpeg"
             self.ytdlp_exe_name = "yt-dlp"
             self.vot_exe_name = "vot-cli"
             
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-cli-macos"
+            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-macos-x64.zip" 
             
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
         self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
@@ -464,7 +462,6 @@ class VideoApp(ctk.CTk):
 
     def open_settings(self): SettingsWindow(self)
 
-    # --- ФОНОВЫЙ ПАРСИНГ ФОРМАТОВ ---
     def request_format_fetch(self, item):
         self.format_fetch_queue.put(item)
 
@@ -505,7 +502,6 @@ class VideoApp(ctk.CTk):
             self.after(0, item.set_available_resolutions, res_list, self.res_combobox.get())
             self.format_fetch_queue.task_done()
 
-    # --- АНАЛИЗ И ЗАЩИТА ОТ ДУБЛЕЙ ---
     def fetch_and_add(self):
         url = self.url_entry.get().strip()
         if len(url) < 10: return
@@ -581,7 +577,6 @@ class VideoApp(ctk.CTk):
             self.queue_items.remove(item)
         self.update_queue_status()
 
-    # --- ЗАПУСК ОЧЕРЕДИ ---
     def stop_process(self):
         self.stop_requested = True
         self.status_label.configure(text="Остановка текущей загрузки...", text_color="orange")
@@ -620,14 +615,12 @@ class VideoApp(ctk.CTk):
     def download_item(self, item):
         process = None
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (FOSWLY VOT-CLI)
             actual_translation_path = None
             if item.mode == "Видео" and item.use_yandex_translation:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Яндекс переводит...", "purple"))
                 
                 translate_temp = os.path.join(self.settings["save_path"], f"temp_trans_{item.video_id}.mp3")
-                # FOSWLY/vot-cli использует флаг --output для указания пути
                 cmd_vot = [self.vot_path, item.url, '--output', translate_temp]
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 
@@ -641,7 +634,6 @@ class VideoApp(ctk.CTk):
                     self.after(0, lambda: item.set_status("⚠️ Перевод не удался, качаю оригинал", "orange"))
                     time.sleep(1.5)
 
-            # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
             item.status = "downloading"
             self.after(0, lambda: item.set_status("Скачивание видео...", "blue"))
             
@@ -714,7 +706,6 @@ class VideoApp(ctk.CTk):
 
             if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
 
-            # 3. СКЛЕЙКА (FFMPEG)
             if not is_audio and actual_translation_path:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Склейка...", "orange"))
@@ -754,7 +745,6 @@ class VideoApp(ctk.CTk):
             
         self.toggle_ui("normal")
 
-    # --- ЯДРА И ВЫХОД ---
     def on_closing(self):
         if self.is_downloading:
             if messagebox.askyesno("Подтверждение", "Очередь активна. Прервать и закрыть?"):
@@ -806,14 +796,37 @@ class VideoApp(ctk.CTk):
                                         target.write(source.read())
                                     break
                         if os.path.exists(zip_path): os.remove(zip_path)
+                        
+                    elif name == "vot-cli":
+                        # Загрузка архива для vot-cli и распаковка на лету
+                        temp_path = os.path.join(APP_DIR, "vot_temp.tmp")
+                        req = urllib.request.Request(url, headers=headers)
+                        with urllib.request.urlopen(req, context=ctx) as response, open(temp_path, 'wb') as out_file:
+                            shutil.copyfileobj(response, out_file)
+                        
+                        try:
+                            # Пытаемся распаковать (автор пакует релизы в .zip)
+                            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                                for file_info in zip_ref.infolist():
+                                    if not file_info.filename.endswith('/') and "vot" in file_info.filename.lower():
+                                        with zip_ref.open(file_info) as source, open(path, "wb") as target:
+                                            target.write(source.read())
+                                        break
+                        except zipfile.BadZipFile:
+                            # Если это не архив, а чистый исполняемый файл (fallback)
+                            shutil.copyfile(temp_path, path)
+                            
+                        if os.path.exists(temp_path): os.remove(temp_path)
+                        
                     else:
                         req = urllib.request.Request(url, headers=headers)
                         with urllib.request.urlopen(req, context=ctx) as response, open(path, 'wb') as out_file:
                             shutil.copyfileobj(response, out_file)
                     
                     if self.os_name != "Windows": os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
-                except Exception:
+                except Exception as e:
                     self.after(0, lambda n=name: self.status_label.configure(text=f"❌ Ошибка скачивания {n}", text_color="red"))
+                    print(f"Error downloading {name}: {e}")
                     return
 
         self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
@@ -824,7 +837,6 @@ class VideoApp(ctk.CTk):
 
         self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
         self.after(0, lambda: self.toggle_ui("normal"))
-
 
 if __name__ == "__main__":
     app = VideoApp()
