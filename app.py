@@ -153,7 +153,7 @@ class VideoApp(ctk.CTk):
                 self.iconbitmap(icon_path)
         
         window_width = 600
-        window_height = 380 
+        window_height = 410 # Увеличили высоту для переключателя режимов
         
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
@@ -204,9 +204,10 @@ class VideoApp(ctk.CTk):
         self.url_entry.bind("<Button-3>", self.show_context_menu)
         self.url_entry.bind("<Button-2>", self.show_context_menu)
 
-        # --- ГИБКИЙ ПЕРЕХВАТ КИРИЛЛИЦЫ ---
-        ctrl_cmd = "<Command-KeyPress>" if self.os_name == "Darwin" else "<Control-KeyPress>"
-        self.url_entry.bind(ctrl_cmd, self.handle_cyrillic_hotkeys)
+        # --- Выбор режима ---
+        self.mode_var = ctk.StringVar(value="Видео")
+        self.mode_seg = ctk.CTkSegmentedButton(self, values=["Видео", "Только Аудио (MP3)"], variable=self.mode_var, command=self.on_mode_change)
+        self.mode_seg.pack(pady=(5, 5))
 
         self.res_label = ctk.CTkLabel(self, text="Качество видео:")
         self.res_label.pack()
@@ -316,16 +317,6 @@ class VideoApp(ctk.CTk):
     def show_context_menu(self, event):
         self.context_menu.tk_popup(event.x_root, event.y_root)
 
-    def handle_cyrillic_hotkeys(self, event):
-        # Tkinter при русской раскладке отдает название клавиши в event.keysym
-        sym = event.keysym.lower() if event.keysym else ""
-        
-        if sym in ('cyrillic_em', 'м'): return self.paste_text()
-        elif sym in ('cyrillic_es', 'с'): return self.copy_text()
-        elif sym in ('cyrillic_che', 'ч'): return self.cut_text()
-        elif sym in ('cyrillic_ef', 'ф'): return self.select_all()
-        # Если нажата английская буква, код просто ничего не делает и система сама выполняет стандартный Ctrl+V
-
     def paste_text(self, event=None):
         try:
             text = self.clipboard_get()
@@ -352,12 +343,28 @@ class VideoApp(ctk.CTk):
         self.url_entry.icursor("end")
         return "break"
 
+    def on_mode_change(self, value):
+        if value == "Видео":
+            if self.res_combobox.cget("values") != ["Нет данных"]:
+                self.res_combobox.configure(state="readonly")
+            if self.settings.get("add_translation"):
+                self.file_btn.configure(state="normal")
+        else:
+            # При выборе аудио отключаем выбор качества видео и перевод
+            self.res_combobox.configure(state="disabled")
+            self.file_btn.configure(state="disabled")
+
     def toggle_ui(self, state):
         self.url_entry.configure(state=state)
         self.settings_btn.configure(state=state)
-        if self.settings.get("add_translation"): 
+        self.mode_seg.configure(state=state)
+        
+        is_audio = self.mode_var.get() == "Только Аудио (MP3)"
+        
+        if not is_audio and self.settings.get("add_translation"): 
             self.file_btn.configure(state=state)
-        if state == "disabled":
+            
+        if state == "disabled" or is_audio:
             self.res_combobox.configure(state="disabled")
         else:
             if self.res_combobox.cget("values") != ["Нет данных"]:
@@ -365,12 +372,12 @@ class VideoApp(ctk.CTk):
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
+        self.on_mode_change(self.mode_var.get())
+        
         if self.settings.get("add_translation"):
             self.start_btn.configure(text="Скачать и склеить")
-            self.file_btn.configure(state="normal")
         else:
             self.start_btn.configure(text="Скачать")
-            self.file_btn.configure(state="disabled")
 
     def open_settings(self): SettingsWindow(self)
 
@@ -418,8 +425,11 @@ class VideoApp(ctk.CTk):
             self.after(0, lambda: self.status_label.configure(text="❌ Ошибка анализа", text_color="red"))
 
     def update_res_list(self, values):
-        self.res_combobox.configure(values=values, state="readonly")
+        # Обновляем значения, но меняем статус в зависимости от режима
+        self.res_combobox.configure(values=values)
         self.res_combobox.set(values[0])
+        if self.mode_var.get() == "Видео":
+            self.res_combobox.configure(state="readonly")
         self.status_label.configure(text="✅ Качество выбрано", text_color="green")
 
     def select_file(self):
@@ -443,14 +453,24 @@ class VideoApp(ctk.CTk):
     def start_process(self):
         url = self.url_entry.get().strip()
         if not url: return
-        res_raw = self.res_combobox.get()
-        if not res_raw or "p" not in res_raw: return
+        
+        is_audio = self.mode_var.get() == "Только Аудио (MP3)"
+        
+        if not is_audio:
+            res_raw = self.res_combobox.get()
+            if not res_raw or "p" not in res_raw: return
+            res_num = int(res_raw.split("p")[0])
+        else:
+            res_num = 0
+            
         if not self.settings["save_path"]:
             path = filedialog.askdirectory()
             if not path: return
             self.settings["save_path"] = os.path.abspath(path)
             SettingsManager.save(self.settings)
-        if self.settings["add_translation"] and not self.translation_file: return
+            
+        if not is_audio and self.settings["add_translation"] and not self.translation_file: 
+            return
         
         self.stop_requested = False
         self.is_downloading = True
@@ -458,11 +478,16 @@ class VideoApp(ctk.CTk):
         self.start_btn.configure(text="Остановить", command=self.stop_process, fg_color="red", hover_color="darkred")
         self.toggle_ui("disabled")
         
-        res_num = int(res_raw.split("p")[0])
         safe_title = "".join([c for c in self.video_title if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
-        base_name = f"{safe_title} {res_num}p.mp4"
+        
+        if is_audio:
+            base_name = f"{safe_title}.mp3"
+            final_name = base_name
+        else:
+            base_name = f"{safe_title} {res_num}p.mp4"
+            final_name = f"{safe_title} {res_num}p (переведен).mp4" if self.settings["add_translation"] else base_name
+            
         base_path = os.path.join(self.settings["save_path"], base_name)
-        final_name = f"{safe_title} {res_num}p (переведен).mp4" if self.settings["add_translation"] else base_name
         final_path = os.path.join(self.settings["save_path"], final_name)
 
         if os.path.exists(final_path) and not messagebox.askyesno("Файл есть", f"Перезаписать {final_name}?"): 
@@ -470,10 +495,10 @@ class VideoApp(ctk.CTk):
             return
         
         skip_download = False
-        if self.settings["add_translation"] and os.path.exists(base_path):
+        if not is_audio and self.settings["add_translation"] and os.path.exists(base_path):
             if messagebox.askyesno("Найдено видео", "Использовать скачанный оригинал?"): skip_download = True
 
-        threading.Thread(target=self.work, args=(url, skip_download, base_path, final_path, final_name, res_num), daemon=True).start()
+        threading.Thread(target=self.work, args=(url, skip_download, base_path, final_path, final_name, res_num, is_audio), daemon=True).start()
 
     def restore_ui_state(self):
         self.is_downloading = False
@@ -485,7 +510,7 @@ class VideoApp(ctk.CTk):
 
     def show_success_dialog(self, final_path):
         self.status_label.configure(text="✅ Готово", text_color="green")
-        if messagebox.askyesno("Успех", f"Видео успешно сохранено:\n{os.path.basename(final_path)}\n\nОткрыть папку с файлом?"):
+        if messagebox.askyesno("Успех", f"Файл успешно сохранен:\n{os.path.basename(final_path)}\n\nОткрыть папку?"):
             path = os.path.abspath(final_path)
             if platform.system() == "Windows":
                 subprocess.run(['explorer', '/select,', path])
@@ -494,29 +519,47 @@ class VideoApp(ctk.CTk):
             else:
                 subprocess.run(['xdg-open', os.path.dirname(path)])
 
-    def work(self, url, skip_download, base_path, final_path, final_name, res_num):
+    def work(self, url, skip_download, base_path, final_path, final_name, res_num, is_audio):
         process = None
         try:
+            temp_template = os.path.join(self.settings["save_path"], "temp_v.%(ext)s")
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
-            
-            MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
-            max_dim = MAX_DIMS.get(res_num, 1920)
+            temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
             
             if not skip_download:
                 self.after(0, lambda: self.status_label.configure(text="Скачивание...", text_color="black"))
                 
-                cmd = [
-                    self.ytdlp_path,
-                    '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                    '-o', temp_video,
-                    '--newline',               
-                    '--no-playlist', 
-                    '--retries', '20', 
-                    '--fragment-retries', '20',
-                    '--no-check-certificate',
-                    '--ffmpeg-location', self.ffmpeg_path,
-                    url
-                ]
+                if is_audio:
+                    cmd = [
+                        self.ytdlp_path,
+                        '-f', 'bestaudio',
+                        '--extract-audio',
+                        '--audio-format', 'mp3',
+                        '--audio-quality', '0',
+                        '-o', temp_template,
+                        '--newline',               
+                        '--no-playlist', 
+                        '--retries', '20', 
+                        '--fragment-retries', '20',
+                        '--no-check-certificate',
+                        '--ffmpeg-location', self.ffmpeg_path,
+                        url
+                    ]
+                else:
+                    MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
+                    max_dim = MAX_DIMS.get(res_num, 1920)
+                    cmd = [
+                        self.ytdlp_path,
+                        '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                        '-o', temp_video,
+                        '--newline',               
+                        '--no-playlist', 
+                        '--retries', '20', 
+                        '--fragment-retries', '20',
+                        '--no-check-certificate',
+                        '--ffmpeg-location', self.ffmpeg_path,
+                        url
+                    ]
                 
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs)
@@ -535,12 +578,16 @@ class VideoApp(ctk.CTk):
                 if process.returncode != 0 and not self.stop_requested:
                     raise Exception("Ошибка скачивания. Возможно, требуется включить VPN или подождать.")
 
-                if os.path.exists(base_path): os.remove(base_path)
-                os.rename(temp_video, base_path)
+                # Переименовываем временный файл в чистовой
+                actual_temp = temp_mp3 if is_audio else temp_video
+                if os.path.exists(actual_temp):
+                    if os.path.exists(base_path): os.remove(base_path)
+                    os.rename(actual_temp, base_path)
 
             if getattr(self, 'stop_requested', False): raise Exception("Процесс остановлен пользователем")
 
-            if self.settings["add_translation"]:
+            # Склеиваем аудио, если это режим Видео и стоит галочка в настройках
+            if not is_audio and self.settings["add_translation"]:
                 self.after(0, lambda: self.status_label.configure(text="Склейка (FFmpeg)...", text_color="black"))
                 v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
                 cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', self.translation_file,
