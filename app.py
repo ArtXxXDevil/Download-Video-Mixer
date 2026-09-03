@@ -72,7 +72,7 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkLabel(self, text="Параметры аудио", font=("Arial", 16, "bold")).pack(pady=(10, 5))
 
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
-        self.check_trans = ctk.CTkCheckBox(self, text="Добавить аудиодорожку с переводом", variable=self.trans_var, command=self.toggle_sliders)
+        self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.toggle_sliders)
         self.check_trans.pack(pady=5)
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
@@ -124,7 +124,6 @@ class SettingsWindow(ctk.CTkToplevel):
         self.grab_release()
         self.destroy()
 
-# --- ОКНО ВЫБОРА ВИДЕО ИЗ ПЛЕЙЛИСТА ---
 class PlaylistDialog(ctk.CTkToplevel):
     def __init__(self, parent, videos):
         super().__init__(parent)
@@ -144,7 +143,6 @@ class PlaylistDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(self, text="Выберите видео для загрузки:", font=("Arial", 14, "bold")).pack(pady=(10, 0))
         
-        # Счетчик выбора
         self.total_count = len(self.videos)
         self.lbl_count = ctk.CTkLabel(self, text=f"Выбрано: {self.total_count} из {self.total_count}", font=("Arial", 12))
         self.lbl_count.pack(pady=(0, 5))
@@ -189,8 +187,10 @@ class QueueItemWidget(ctk.CTkFrame):
         self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
         self.title_text = video_info.get('title', 'Видео')
         self.mode = mode
-        self.status = "waiting" # waiting, downloading, processing, done, error, fetching_formats
-        self.translation_path = None
+        self.status = "waiting" 
+        
+        # Переменная для автоперевода Яндексом
+        self.use_yandex_translation = False
         
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
         top_frame.pack(fill="x", padx=5, pady=2)
@@ -208,7 +208,9 @@ class QueueItemWidget(ctk.CTkFrame):
         self.item_res_var = ctk.StringVar(value=global_res_str)
         self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
-        self.btn_audio = ctk.CTkButton(self.mid_frame, text="🎵 Добавить перевод", height=24, width=120, command=self.select_audio)
+        
+        # Кнопка Яндекса
+        self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Яндекс.Перевод", height=24, width=130, command=self.toggle_yandex)
 
         self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
         self.lbl_status.pack(side="right")
@@ -228,11 +230,19 @@ class QueueItemWidget(ctk.CTkFrame):
     def setup_mode_ui(self):
         self.combo_res.pack_forget()
         self.lbl_mp3.pack_forget()
-        self.btn_audio.pack_forget()
+        self.btn_yandex.pack_forget()
         
         if self.mode == "Видео":
             self.combo_res.pack(side="left", padx=(0, 10))
-            self.toggle_audio_btn(self.app.settings.get("add_translation"))
+            self.btn_yandex.pack(side="left", padx=5)
+            
+            # Применяем глобальную настройку Яндекса
+            if self.app.settings.get("add_translation"):
+                self.use_yandex_translation = True
+                self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+            else:
+                self.use_yandex_translation = False
+                self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
             
             if self.combo_res.cget("values") == ["4K (2160p)"] and self.status == "waiting":
                 self.status = "fetching_formats"
@@ -251,8 +261,6 @@ class QueueItemWidget(ctk.CTkFrame):
 
     def set_available_resolutions(self, res_list, global_res_str):
         if not self.winfo_exists(): return
-        
-        # Если сейчас идет скачивание, комбобокс должен оставаться заблокированным
         state = "disabled" if self.app.is_downloading else "readonly"
         self.combo_res.configure(values=res_list, state=state)
         
@@ -269,21 +277,13 @@ class QueueItemWidget(ctk.CTkFrame):
         if self.status == "fetching_formats":
             self.status = "waiting"
 
-    def toggle_audio_btn(self, show):
-        if show and self.mode == "Видео":
-            self.btn_audio.pack(side="left", padx=5)
+    def toggle_yandex(self):
+        if self.app.is_downloading: return
+        self.use_yandex_translation = not self.use_yandex_translation
+        if self.use_yandex_translation:
+            self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
         else:
-            self.btn_audio.pack_forget()
-            self.translation_path = None
-            self.btn_audio.configure(text="🎵 Добавить перевод", fg_color=["#3B8ED0", "#1F6AA5"])
-
-    def select_audio(self):
-        path = filedialog.askopenfilename(filetypes=[("Audio Files", "*.mp3 *.wav *.m4a")])
-        if path:
-            self.translation_path = path
-            filename = os.path.basename(path)
-            short_name = (filename[:15] + '...') if len(filename) > 15 else filename
-            self.btn_audio.configure(text=f"🎵 {short_name}", fg_color="green", hover_color="darkgreen")
+            self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
 
     def update_progress(self, percent):
         self.progress.set(percent / 100.0)
@@ -305,7 +305,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v2.0")
+        self.title("Download Video Mixer v3.4 (Yandex Core)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -328,15 +328,26 @@ class VideoApp(ctk.CTk):
         self.geometry("650x600")
         self.settings = SettingsManager.load()
         
+        # Прописываем пути к 3 ядрам
         if self.os_name == "Windows":
-            self.ffmpeg_exe_name, self.ytdlp_exe_name = "ffmpeg.exe", "yt-dlp.exe"
+            self.ffmpeg_exe_name = "ffmpeg.exe"
+            self.ytdlp_exe_name = "yt-dlp.exe"
+            self.vot_exe_name = "vot-cli.exe"
+            
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+            # Ссылка на бинарник vot-cli для Windows
+            self.vot_url = "https://github.com/ilyhalight/vot-cli/releases/latest/download/vot-cli-win.exe" 
         else:
-            self.ffmpeg_exe_name, self.ytdlp_exe_name = "ffmpeg", "yt-dlp"
+            self.ffmpeg_exe_name = "ffmpeg"
+            self.ytdlp_exe_name = "yt-dlp"
+            self.vot_exe_name = "vot-cli"
+            
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+            self.vot_url = "https://github.com/ilyhalight/vot-cli/releases/latest/download/vot-cli-macos"
             
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
         self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
+        self.vot_path = os.path.join(APP_DIR, self.vot_exe_name)
 
         self.startupinfo = None
         if self.os_name == "Windows":
@@ -416,7 +427,6 @@ class VideoApp(ctk.CTk):
             self.res_combobox.configure(state="disabled")
             
         if self.queue_items:
-            # Умная проверка: спрашиваем, только если есть карточки с отличающимся режимом
             needs_change = any(item.mode != value for item in self.queue_items)
             if needs_change:
                 ans = messagebox.askyesno("Изменение режима", f"Перевести все элементы в текущей очереди в формат '{value}'?")
@@ -436,19 +446,26 @@ class VideoApp(ctk.CTk):
         else:
             self.res_combobox.configure(state="readonly")
             
-        # Блокировка/разблокировка комбобоксов во время скачивания
         for item in self.queue_items:
             if state == "disabled":
                 item.combo_res.configure(state="disabled")
+                item.btn_yandex.configure(state="disabled")
             else:
                 if item.mode == "Видео":
                     item.combo_res.configure(state="readonly")
+                    item.btn_yandex.configure(state="normal")
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
-        show_audio = self.settings.get("add_translation")
+        # Обновляем дефолтные состояния на карточках при смене настроек
+        global_trans = self.settings.get("add_translation")
         for item in self.queue_items:
-            item.toggle_audio_btn(show_audio)
+            if item.mode == "Видео":
+                item.use_yandex_translation = global_trans
+                if global_trans:
+                    item.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+                else:
+                    item.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
 
     def open_settings(self): SettingsWindow(self)
 
@@ -487,7 +504,6 @@ class VideoApp(ctk.CTk):
             except:
                 max_val = 1080 
 
-            # Новые имена и корректная сортировка
             all_res = [(2160, "4K (2160p)"), (1080, "1080p FullHD"), (720, "720p HD"), (480, "480p SD"), (360, "360p SD")]
             res_list = [name for h, name in all_res if h <= max_val] or ["360p SD"]
             
@@ -609,8 +625,30 @@ class VideoApp(ctk.CTk):
     def download_item(self, item):
         process = None
         try:
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (ЯНДЕКС VOT-CLI)
+            actual_translation_path = None
+            if item.mode == "Видео" and item.use_yandex_translation:
+                item.status = "processing"
+                self.after(0, lambda: item.set_status("Яндекс переводит...", "purple"))
+                
+                translate_temp = os.path.join(self.settings["save_path"], f"temp_trans_{item.video_id}.mp3")
+                cmd_vot = [self.vot_path, item.url, '--output', translate_temp]
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                
+                # Запускаем vot-cli и ждем (он сам скачает mp3)
+                subprocess.run(cmd_vot, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+                
+                if self.stop_requested: raise Exception("Остановлено")
+                
+                if os.path.exists(translate_temp):
+                    actual_translation_path = translate_temp
+                else:
+                    self.after(0, lambda: item.set_status("⚠️ Перевод не удался, качаю оригинал", "orange"))
+                    time.sleep(1.5)
+
+            # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
             item.status = "downloading"
-            self.after(0, lambda: item.set_status("Скачивание...", "blue"))
+            self.after(0, lambda: item.set_status("Скачивание видео...", "blue"))
             
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
@@ -623,7 +661,7 @@ class VideoApp(ctk.CTk):
                 final_name = base_name
             else:
                 base_name = f"{safe_title} {res_num}p.mp4"
-                final_name = f"{safe_title} {res_num}p (переведен).mp4" if item.translation_path else base_name
+                final_name = f"{safe_title} {res_num}p (Яндекс).mp4" if actual_translation_path else base_name
                 
             base_path = os.path.join(self.settings["save_path"], base_name)
             final_path = os.path.join(self.settings["save_path"], final_name)
@@ -637,7 +675,8 @@ class VideoApp(ctk.CTk):
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
             
-            if not (not is_audio and item.translation_path and os.path.exists(base_path)): 
+            # Пропускаем загрузку видео, если оригинал уже лежит на диске, а нам нужна только склейка
+            if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
                 if is_audio:
                     cmd = [
                         self.ytdlp_path, '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
@@ -672,7 +711,7 @@ class VideoApp(ctk.CTk):
                             
                 process.wait()
                 if process.returncode != 0 and not self.stop_requested:
-                    raise Exception("Ошибка загрузки")
+                    raise Exception("Ошибка загрузки видео")
 
                 actual_temp = temp_mp3 if is_audio else temp_video
                 if os.path.exists(actual_temp):
@@ -681,12 +720,13 @@ class VideoApp(ctk.CTk):
 
             if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
 
-            if not is_audio and item.translation_path:
+            # 3. СКЛЕЙКА (FFMPEG)
+            if not is_audio and actual_translation_path:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Склейка...", "orange"))
                 
                 v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
-                cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', item.translation_path,
+                cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
                        '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
                        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
                        
@@ -740,7 +780,7 @@ class VideoApp(ctk.CTk):
         save_dir = self.settings.get("save_path", "")
         if save_dir and os.path.exists(save_dir):
             for file_name in os.listdir(save_dir):
-                if file_name.startswith("temp_v"):
+                if file_name.startswith("temp_v") or file_name.startswith("temp_trans_"):
                     try: os.remove(os.path.join(save_dir, file_name))
                     except: pass
 
@@ -750,7 +790,14 @@ class VideoApp(ctk.CTk):
         ctx.verify_mode = ssl.CERT_NONE
         headers = {'User-Agent': 'Mozilla/5.0'}
 
-        for path, url, name in [(self.ytdlp_path, self.ytdlp_url, "yt-dlp"), (self.ffmpeg_path, None, "FFmpeg")]:
+        # Проверка 3 ядер
+        dependencies = [
+            (self.ytdlp_path, self.ytdlp_url, "yt-dlp"),
+            (self.vot_path, self.vot_url, "vot-cli"),
+            (self.ffmpeg_path, None, "FFmpeg")
+        ]
+
+        for path, url, name in dependencies:
             if not os.path.exists(path):
                 self.after(0, lambda n=name: self.status_label.configure(text=f"Скачивание {n}...", text_color="orange"))
                 try:
@@ -772,21 +819,20 @@ class VideoApp(ctk.CTk):
                         with urllib.request.urlopen(req, context=ctx) as response, open(path, 'wb') as out_file:
                             shutil.copyfileobj(response, out_file)
                     
-                    if self.os_name != "Windows": os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
-                except Exception:
-                    self.after(0, lambda n=name: self.status_label.configure(text=f"❌ Ошибка скачивания {n}", text_color="red"))
-                    return
+                    if self.os_name !=Отличная идея. Выделение внешних зависимостей (таких как `vot-cli`) в отдельный самообновляемый модуль делает проект гораздо более независимым и удобным для конечного пользователя. 
 
-        self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
-        try:
-            kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-            subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-        except: pass
+Поскольку `vot-cli` часто распространяется в виде готовых бинарных файлов (релизов на GitHub) или npm-пакетов, я напишу для вас универсальный менеджер на **Python**, который будет:
+1. Проверять наличие установленной версии.
+2. Обращаться к API (например, GitHub) для проверки последней версии.
+3. Скачивать и распаковывать CLI, если его нет или вышла новая версия.
+4. Предоставлять удобный интерфейс для запуска.
 
-        self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
-        self.after(0, lambda: self.toggle_ui("normal"))
+### 1. Структура проекта
+Рекомендую организовать файлы следующим образом:
 
-
-if __name__ == "__main__":
-    app = VideoApp()
-    app.mainloop()
+```text
+my_project/
+├── main.py
+└── modules/
+    ├── __init__.py
+    └── vot_manager.py      # Наш новый модуль для vot-cli
