@@ -11,7 +11,7 @@ import zipfile
 import stat
 import shutil
 import ssl
-import re # Новый модуль для поиска процентов в тексте консоли
+import re
 
 # --- ПОРТАТИВНАЯ ЛОГИКА ПУТЕЙ ---
 if getattr(sys, 'frozen', False):
@@ -131,7 +131,7 @@ class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("Download Video Mixer v2.0 (Core)")
+        self.title("Download Video Mixer v2.0")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -167,7 +167,6 @@ class VideoApp(ctk.CTk):
         self.video_title = "video"
         self.last_percent = -1
         
-        # Настройка путей для двух ядер (FFmpeg и yt-dlp)
         if self.os_name == "Windows":
             self.ffmpeg_exe_name = "ffmpeg.exe"
             self.ytdlp_exe_name = "yt-dlp.exe"
@@ -180,7 +179,6 @@ class VideoApp(ctk.CTk):
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
         self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
 
-        # Конфигурация для скрытия консоли Windows при вызове subprocess
         self.startupinfo = None
         if self.os_name == "Windows":
             self.startupinfo = subprocess.STARTUPINFO()
@@ -206,15 +204,10 @@ class VideoApp(ctk.CTk):
         self.url_entry.bind("<Button-3>", self.show_context_menu)
         self.url_entry.bind("<Button-2>", self.show_context_menu)
 
+        # Только перехват кириллицы. Английский Ctrl+V теперь работает нативно!
         key_cmd = "<Command-KeyPress>" if self.os_name == "Darwin" else "<Control-KeyPress>"
         self.url_entry.bind(key_cmd, self.handle_cyrillic_hotkeys)
         
-        ctrl_key = "Command" if self.os_name == "Darwin" else "Control"
-        self.url_entry.bind(f"<{ctrl_key}-v>", self.paste_text)
-        self.url_entry.bind(f"<{ctrl_key}-c>", self.copy_text)
-        self.url_entry.bind(f"<{ctrl_key}-x>", self.cut_text)
-        self.url_entry.bind(f"<{ctrl_key}-a>", self.select_all)
-
         self.res_label = ctk.CTkLabel(self, text="Качество видео:")
         self.res_label.pack()
         
@@ -246,7 +239,6 @@ class VideoApp(ctk.CTk):
         self.toggle_ui("disabled")
         threading.Thread(target=self.check_dependencies, daemon=True).start()
 
-    # --- ЛОГИКА ЭКСТРЕННОГО ВЫХОДА И ОЧИСТКИ ---
     def on_closing(self):
         if self.is_downloading:
             if messagebox.askyesno("Подтверждение", "Процесс скачивания активен.\n\nПрервать и закрыть программу?"):
@@ -270,14 +262,12 @@ class VideoApp(ctk.CTk):
                     try: os.remove(os.path.join(save_dir, file_name))
                     except: pass
 
-    # --- ЗАГРУЗКА И ОБНОВЛЕНИЕ ЯДЕР (V2.0) ---
     def check_dependencies(self):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         headers = {'User-Agent': 'Mozilla/5.0'}
 
-        # Проверка и скачивание yt-dlp
         if not os.path.exists(self.ytdlp_path):
             self.after(0, lambda: self.status_label.configure(text="Скачивание загрузчика yt-dlp...", text_color="orange"))
             try:
@@ -286,11 +276,10 @@ class VideoApp(ctk.CTk):
                     shutil.copyfileobj(response, out_file)
                 if self.os_name != "Windows":
                     os.chmod(self.ytdlp_path, os.stat(self.ytdlp_path).st_mode | stat.S_IEXEC)
-            except Exception as e:
+            except Exception:
                 self.after(0, lambda: self.status_label.configure(text="❌ Ошибка скачивания yt-dlp", text_color="red"))
                 return
 
-        # Проверка и скачивание FFmpeg
         if not os.path.exists(self.ffmpeg_path):
             self.after(0, lambda: self.status_label.configure(text="Скачивание ядра FFmpeg...", text_color="orange"))
             try:
@@ -310,29 +299,30 @@ class VideoApp(ctk.CTk):
                 if os.path.exists(zip_path): os.remove(zip_path)
                 if self.os_name != "Windows":
                     os.chmod(self.ffmpeg_path, os.stat(self.ffmpeg_path).st_mode | stat.S_IEXEC)
-            except Exception as e:
+            except Exception:
                 self.after(0, lambda: self.status_label.configure(text="❌ Ошибка установки FFmpeg", text_color="red"))
                 return
 
-        # Фоновое обновление yt-dlp
         self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
         try:
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
             subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
         except:
-            pass # Если не обновилось - не страшно, работаем на старом
+            pass
 
         self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
         self.after(0, lambda: self.toggle_ui("normal"))
 
-    # --- UI МЕТОДЫ И ГОРЯЧИЕ КЛАВИШИ ---
     def show_context_menu(self, event):
         self.context_menu.tk_popup(event.x_root, event.y_root)
 
     def handle_cyrillic_hotkeys(self, event):
+        # Отрабатывает только если нажата русская буква при зажатом Ctrl/Cmd
         char = event.char.lower() if event.char else ""
-        keys = {'м': self.paste_text, 'с': self.copy_text, 'ч': self.cut_text, 'ф': self.select_all}
-        if char in keys: return keys[char]()
+        if char == 'м': return self.paste_text()
+        elif char == 'с': return self.copy_text()
+        elif char == 'ч': return self.cut_text()
+        elif char == 'ф': return self.select_all()
 
     def paste_text(self, event=None):
         try:
@@ -382,7 +372,6 @@ class VideoApp(ctk.CTk):
 
     def open_settings(self): SettingsWindow(self)
 
-    # --- АНАЛИЗ ВИДЕО (Subprocess V2.0) ---
     def get_standard_res(self, w, h):
         max_dim = max(w, h)
         res_map = {7680: 4320, 3840: 2160, 2560: 1440, 1920: 1080, 1280: 720, 854: 480, 640: 360, 426: 240}
@@ -403,7 +392,6 @@ class VideoApp(ctk.CTk):
             cmd = [self.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', url]
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
             
-            # Спрашиваем инфу у внешнего ядра
             process = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
             if process.returncode != 0:
                 raise Exception("Ошибка yt-dlp")
@@ -504,20 +492,25 @@ class VideoApp(ctk.CTk):
             else:
                 subprocess.run(['xdg-open', os.path.dirname(path)])
 
-    # --- ЗАГРУЗКА И СКЛЕЙКА (Subprocess V2.0) ---
     def work(self, url, skip_download, base_path, final_path, final_name, res_num):
         process = None
         try:
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             
+            # --- ФИКС ДЛЯ SHORTS ---
+            MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
+            max_dim = MAX_DIMS.get(res_num, 1920)
+            
             if not skip_download:
                 self.after(0, lambda: self.status_label.configure(text="Скачивание...", text_color="black"))
                 
+                # Теперь мы ограничиваем и ширину, и высоту. 
+                # Shorts (1080x1920) и обычное видео (1920x1080) теперь оба скачаются без ошибок!
                 cmd = [
                     self.ytdlp_path,
-                    '-f', f'bestvideo[height<={res_num}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                    '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
                     '-o', temp_video,
-                    '--newline',               # Выдавать прогресс построчно (нужно для парсинга)
+                    '--newline',               
                     '--no-playlist', 
                     '--retries', '20', 
                     '--fragment-retries', '20',
@@ -527,8 +520,6 @@ class VideoApp(ctk.CTk):
                 ]
                 
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                
-                # Запускаем скрытый процесс и читаем его вывод
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs)
                 
                 for line in process.stdout:
@@ -536,7 +527,6 @@ class VideoApp(ctk.CTk):
                         process.terminate()
                         raise Exception("Процесс остановлен пользователем")
                         
-                    # Ищем строку с прогрессом, например: [download]  45.0% of 1.25GiB
                     match = re.search(r'\[download\]\s+([\d\.]+)%', line)
                     if match:
                         percent = float(match.group(1))
@@ -565,7 +555,7 @@ class VideoApp(ctk.CTk):
             
         except Exception as e:
             if process and process.poll() is None:
-                process.terminate() # Жестко добиваем зависший процесс
+                process.terminate() 
             err_msg = str(e)
             self.after(0, lambda: self.status_label.configure(text="⏹ Загрузка отменена" if "остановлен" in err_msg else "❌ Ошибка", text_color="orange" if "остановлен" in err_msg else "red"))
             if "остановлен" not in err_msg: self.after(0, lambda err=err_msg: messagebox.showerror("Ошибка", f"Процесс прерван:\n\n{err}"))
