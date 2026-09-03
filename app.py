@@ -124,6 +124,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.grab_release()
         self.destroy()
 
+# --- ОКНО ВЫБОРА ВИДЕО ИЗ ПЛЕЙЛИСТА ---
 class PlaylistDialog(ctk.CTkToplevel):
     def __init__(self, parent, videos):
         super().__init__(parent)
@@ -132,16 +133,21 @@ class PlaylistDialog(ctk.CTkToplevel):
         self.selected_videos = []
         
         self.title("Плейлист обнаружен")
-        self.geometry("500x450")
+        self.geometry("500x470")
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - 250
-        y = parent.winfo_y() + (parent.winfo_height() // 2) - 225
+        y = parent.winfo_y() + (parent.winfo_height() // 2) - 235
         self.geometry(f"+{x}+{y}")
         self.transient(parent)
         self.grab_set()
 
-        ctk.CTkLabel(self, text="Выберите видео для загрузки:", font=("Arial", 14, "bold")).pack(pady=10)
+        ctk.CTkLabel(self, text="Выберите видео для загрузки:", font=("Arial", 14, "bold")).pack(pady=(10, 0))
+        
+        # Счетчик выбора
+        self.total_count = len(self.videos)
+        self.lbl_count = ctk.CTkLabel(self, text=f"Выбрано: {self.total_count} из {self.total_count}", font=("Arial", 12))
+        self.lbl_count.pack(pady=(0, 5))
         
         self.scroll = ctk.CTkScrollableFrame(self, width=450, height=300)
         self.scroll.pack(pady=5, padx=10, fill="both", expand=True)
@@ -153,7 +159,7 @@ class PlaylistDialog(ctk.CTkToplevel):
             duration = vid.get('duration', 0)
             dur_str = f" ({int(duration)//60}:{int(duration)%60:02d})" if duration else ""
             
-            cb = ctk.CTkCheckBox(self.scroll, text=f"{title}{dur_str}", variable=var)
+            cb = ctk.CTkCheckBox(self.scroll, text=f"{title}{dur_str}", variable=var, command=self.update_count)
             cb.pack(anchor="w", pady=2, padx=5)
             self.checkboxes.append((var, vid))
 
@@ -162,6 +168,10 @@ class PlaylistDialog(ctk.CTkToplevel):
         
         ctk.CTkButton(btn_frame, text="Добавить выбранные", command=self.confirm, fg_color="green", hover_color="darkgreen").pack(side="left", padx=10)
         ctk.CTkButton(btn_frame, text="Отмена", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
+
+    def update_count(self):
+        selected = sum(1 for var, _ in self.checkboxes if var.get())
+        self.lbl_count.configure(text=f"Выбрано: {selected} из {self.total_count}")
 
     def confirm(self):
         for var, vid in self.checkboxes:
@@ -195,9 +205,8 @@ class QueueItemWidget(ctk.CTkFrame):
         self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.mid_frame.pack(fill="x", padx=5, pady=2)
 
-        # Компоненты режимов
         self.item_res_var = ctk.StringVar(value=global_res_str)
-        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["1080p HD"], variable=self.item_res_var, width=110, height=24)
+        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         self.btn_audio = ctk.CTkButton(self.mid_frame, text="🎵 Добавить перевод", height=24, width=120, command=self.select_audio)
 
@@ -225,8 +234,7 @@ class QueueItemWidget(ctk.CTkFrame):
             self.combo_res.pack(side="left", padx=(0, 10))
             self.toggle_audio_btn(self.app.settings.get("add_translation"))
             
-            # Запускаем фоновый парсинг форматов, если еще не парсили
-            if self.combo_res.cget("values") == ["1080p HD"] and self.status == "waiting":
+            if self.combo_res.cget("values") == ["4K (2160p)"] and self.status == "waiting":
                 self.status = "fetching_formats"
                 self.item_res_var.set("Загрузка...")
                 self.combo_res.configure(state="disabled")
@@ -243,11 +251,13 @@ class QueueItemWidget(ctk.CTkFrame):
 
     def set_available_resolutions(self, res_list, global_res_str):
         if not self.winfo_exists(): return
-        self.combo_res.configure(values=res_list, state="readonly")
+        
+        # Если сейчас идет скачивание, комбобокс должен оставаться заблокированным
+        state = "disabled" if self.app.is_downloading else "readonly"
+        self.combo_res.configure(values=res_list, state=state)
         
         global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
         
-        # Подбираем ближайшее к глобальному, но не превышающее
         selected = res_list[0] 
         for r in res_list:
             val = 2160 if "4K" in r else (int(r.split("p")[0]) if "p" in r else 0)
@@ -295,7 +305,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.2")
+        self.title("Download Video Mixer v3.3")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -335,7 +345,6 @@ class VideoApp(ctk.CTk):
 
         self.build_ui()
         
-        # Фоновые процессы
         self.format_fetch_queue = queue.Queue()
         threading.Thread(target=self.check_dependencies, daemon=True).start()
         threading.Thread(target=self.format_fetch_worker, daemon=True).start()
@@ -369,9 +378,9 @@ class VideoApp(ctk.CTk):
         self.mode_seg.pack(side="left", padx=10)
         
         ctk.CTkLabel(param_frame, text="Глобальное качество:").pack(side="left", padx=(10, 5))
-        self.res_combobox = ctk.CTkComboBox(param_frame, values=["1080p HD", "720p HD", "480p SD", "360p", "4K (2160p)"], state="readonly", width=110)
+        self.res_combobox = ctk.CTkComboBox(param_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], state="readonly", width=125)
         self.res_combobox.pack(side="left", padx=5)
-        self.res_combobox.set("1080p HD")
+        self.res_combobox.set("4K (2160p)")
 
         self.queue_frame = ctk.CTkScrollableFrame(self, width=600, height=300)
         self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
@@ -407,10 +416,13 @@ class VideoApp(ctk.CTk):
             self.res_combobox.configure(state="disabled")
             
         if self.queue_items:
-            ans = messagebox.askyesno("Изменение режима", f"Перевести все элементы в текущей очереди в формат '{value}'?")
-            if ans:
-                for item in self.queue_items:
-                    item.change_mode(value)
+            # Умная проверка: спрашиваем, только если есть карточки с отличающимся режимом
+            needs_change = any(item.mode != value for item in self.queue_items)
+            if needs_change:
+                ans = messagebox.askyesno("Изменение режима", f"Перевести все элементы в текущей очереди в формат '{value}'?")
+                if ans:
+                    for item in self.queue_items:
+                        item.change_mode(value)
 
     def toggle_ui(self, state):
         self.url_entry.configure(state=state)
@@ -418,10 +430,19 @@ class VideoApp(ctk.CTk):
         self.btn_add.configure(state=state)
         self.mode_seg.configure(state=state)
         self.clear_btn.configure(state=state)
+        
         if state == "disabled" or self.mode_var.get() != "Видео":
             self.res_combobox.configure(state="disabled")
         else:
             self.res_combobox.configure(state="readonly")
+            
+        # Блокировка/разблокировка комбобоксов во время скачивания
+        for item in self.queue_items:
+            if state == "disabled":
+                item.combo_res.configure(state="disabled")
+            else:
+                if item.mode == "Видео":
+                    item.combo_res.configure(state="readonly")
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
@@ -466,9 +487,9 @@ class VideoApp(ctk.CTk):
             except:
                 max_val = 1080 
 
-            # Генерация списка форматов (вниз от максимального)
-            all_res = [(2160, "4K (2160p)"), (1080, "1080p HD"), (720, "720p HD"), (480, "480p SD"), (360, "360p")]
-            res_list = [name for h, name in all_res if h <= max_val] or ["360p"]
+            # Новые имена и корректная сортировка
+            all_res = [(2160, "4K (2160p)"), (1080, "1080p FullHD"), (720, "720p HD"), (480, "480p SD"), (360, "360p SD")]
+            res_list = [name for h, name in all_res if h <= max_val] or ["360p SD"]
             
             self.after(0, item.set_available_resolutions, res_list, self.res_combobox.get())
             self.format_fetch_queue.task_done()
@@ -483,7 +504,6 @@ class VideoApp(ctk.CTk):
 
     def _analyze_url_thread(self, url):
         try:
-            # Всегда используем --flat-playlist для мгновенного ответа
             cmd = [self.ytdlp_path, '--dump-json', '--ignore-errors', '--no-check-certificate', '--flat-playlist', url]
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
             
@@ -495,7 +515,7 @@ class VideoApp(ctk.CTk):
                 if not line: continue
                 try:
                     data = json.loads(line)
-                    if data.get('id'): # Отсекаем мусор
+                    if data.get('id'):
                         videos.append(data)
                         self.after(0, lambda c=len(videos): self.status_label.configure(text=f"Анализ... Найдено видео: {c}", text_color="black"))
                 except: pass
@@ -519,7 +539,6 @@ class VideoApp(ctk.CTk):
         mode = self.mode_var.get()
         global_res_str = self.res_combobox.get()
         
-        # Проверка дубликатов по ID видео, а не по ссылке
         existing_ids = set(item.video_id for item in self.queue_items)
         added_count = 0
         
@@ -579,7 +598,6 @@ class VideoApp(ctk.CTk):
         for item in self.queue_items:
             if self.stop_requested: break
             
-            # Ждем пока фоновый сканер не отдаст нам список разрешений
             while item.status == "fetching_formats" and not self.stop_requested:
                 time.sleep(0.5)
                 
