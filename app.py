@@ -204,14 +204,9 @@ class VideoApp(ctk.CTk):
         self.url_entry.bind("<Button-3>", self.show_context_menu)
         self.url_entry.bind("<Button-2>", self.show_context_menu)
 
-        # --- ЖЕЛЕЗОБЕТОННЫЙ БИНДИНГ КИРИЛЛИЦЫ ---
-        ctrl_key = "Command" if self.os_name == "Darwin" else "Control"
-        
-        # Явно прописываем строчные и заглавные буквы для надежности
-        for key in ('м', 'М'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.paste_text)
-        for key in ('с', 'С'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.copy_text)
-        for key in ('ч', 'Ч'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.cut_text)
-        for key in ('ф', 'Ф'): self.url_entry.bind(f"<{ctrl_key}-{key}>", self.select_all)
+        # --- ГИБКИЙ ПЕРЕХВАТ КИРИЛЛИЦЫ ---
+        ctrl_cmd = "<Command-KeyPress>" if self.os_name == "Darwin" else "<Control-KeyPress>"
+        self.url_entry.bind(ctrl_cmd, self.handle_cyrillic_hotkeys)
 
         self.res_label = ctk.CTkLabel(self, text="Качество видео:")
         self.res_label.pack()
@@ -320,6 +315,16 @@ class VideoApp(ctk.CTk):
 
     def show_context_menu(self, event):
         self.context_menu.tk_popup(event.x_root, event.y_root)
+
+    def handle_cyrillic_hotkeys(self, event):
+        # Tkinter при русской раскладке отдает название клавиши в event.keysym
+        sym = event.keysym.lower() if event.keysym else ""
+        
+        if sym in ('cyrillic_em', 'м'): return self.paste_text()
+        elif sym in ('cyrillic_es', 'с'): return self.copy_text()
+        elif sym in ('cyrillic_che', 'ч'): return self.cut_text()
+        elif sym in ('cyrillic_ef', 'ф'): return self.select_all()
+        # Если нажата английская буква, код просто ничего не делает и система сама выполняет стандартный Ctrl+V
 
     def paste_text(self, event=None):
         try:
