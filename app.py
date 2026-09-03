@@ -12,6 +12,8 @@ import stat
 import shutil
 import ssl
 import re
+import queue
+import time
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -122,7 +124,6 @@ class SettingsWindow(ctk.CTkToplevel):
         self.grab_release()
         self.destroy()
 
-
 class PlaylistDialog(ctk.CTkToplevel):
     def __init__(self, parent, videos):
         super().__init__(parent)
@@ -169,16 +170,16 @@ class PlaylistDialog(ctk.CTkToplevel):
         self.parent.add_items_to_queue(self.selected_videos)
         self.destroy()
 
-
 # --- КАРТОЧКА ОТДЕЛЬНОГО ВИДЕО В ОЧЕРЕДИ ---
 class QueueItemWidget(ctk.CTkFrame):
     def __init__(self, master, app, video_info, mode, global_res_str):
         super().__init__(master)
         self.app = app
-        self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={video_info.get('id')}"
+        self.video_id = video_info.get('id', '')
+        self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
         self.title_text = video_info.get('title', 'Видео')
         self.mode = mode
-        self.status = "waiting"
+        self.status = "waiting" # waiting, downloading, processing, done, error, fetching_formats
         self.translation_path = None
         
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -194,21 +195,16 @@ class QueueItemWidget(ctk.CTkFrame):
         self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.mid_frame.pack(fill="x", padx=5, pady=2)
 
-        # Выбор качества для конкретного видео
+        # Компоненты режимов
         self.item_res_var = ctk.StringVar(value=global_res_str)
-        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["1080p HD", "720p HD", "480p SD", "360p", "4K (2160p)"], variable=self.item_res_var, width=110, height=24)
-        
-        if mode == "Только Аудио (MP3)":
-            ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11)).pack(side="left", padx=(0, 10))
-        else:
-            self.combo_res.pack(side="left", padx=(0, 10))
-
-        # Кнопка перевода
+        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["1080p HD"], variable=self.item_res_var, width=110, height=24)
+        self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         self.btn_audio = ctk.CTkButton(self.mid_frame, text="🎵 Добавить перевод", height=24, width=120, command=self.select_audio)
-        self.toggle_audio_btn(self.app.settings.get("add_translation"))
 
         self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
         self.lbl_status.pack(side="right")
+
+        self.setup_mode_ui()
 
         bot_frame = ctk.CTkFrame(self, fg_color="transparent")
         bot_frame.pack(fill="x", padx=5, pady=(2, 5))
@@ -220,9 +216,52 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
         self.lbl_percent.pack(side="right")
 
+    def setup_mode_ui(self):
+        self.combo_res.pack_forget()
+        self.lbl_mp3.pack_forget()
+        self.btn_audio.pack_forget()
+        
+        if self.mode == "Видео":
+            self.combo_res.pack(side="left", padx=(0, 10))
+            self.toggle_audio_btn(self.app.settings.get("add_translation"))
+            
+            # Запускаем фоновый парсинг форматов, если еще не парсили
+            if self.combo_res.cget("values") == ["1080p HD"] and self.status == "waiting":
+                self.status = "fetching_formats"
+                self.item_res_var.set("Загрузка...")
+                self.combo_res.configure(state="disabled")
+                self.app.request_format_fetch(self)
+        else:
+            self.lbl_mp3.pack(side="left", padx=(0, 10))
+            if self.status == "fetching_formats":
+                self.status = "waiting"
+
+    def change_mode(self, new_mode):
+        if self.mode == new_mode: return
+        self.mode = new_mode
+        self.setup_mode_ui()
+
+    def set_available_resolutions(self, res_list, global_res_str):
+        if not self.winfo_exists(): return
+        self.combo_res.configure(values=res_list, state="readonly")
+        
+        global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
+        
+        # Подбираем ближайшее к глобальному, но не превышающее
+        selected = res_list[0] 
+        for r in res_list:
+            val = 2160 if "4K" in r else (int(r.split("p")[0]) if "p" in r else 0)
+            if val <= global_val:
+                selected = r
+                break 
+                
+        self.item_res_var.set(selected)
+        if self.status == "fetching_formats":
+            self.status = "waiting"
+
     def toggle_audio_btn(self, show):
         if show and self.mode == "Видео":
-            self.btn_audio.pack(side="left")
+            self.btn_audio.pack(side="left", padx=5)
         else:
             self.btn_audio.pack_forget()
             self.translation_path = None
@@ -252,11 +291,11 @@ class QueueItemWidget(ctk.CTkFrame):
         self.destroy()
         self.app.update_queue_status()
 
-
+# --- ОСНОВНОЕ ПРИЛОЖЕНИЕ ---
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.1")
+        self.title("Download Video Mixer v3.2")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -277,7 +316,6 @@ class VideoApp(ctk.CTk):
                 self.iconbitmap(icon_path)
         
         self.geometry("650x600")
-        
         self.settings = SettingsManager.load()
         
         if self.os_name == "Windows":
@@ -296,7 +334,11 @@ class VideoApp(ctk.CTk):
             self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
         self.build_ui()
+        
+        # Фоновые процессы
+        self.format_fetch_queue = queue.Queue()
         threading.Thread(target=self.check_dependencies, daemon=True).start()
+        threading.Thread(target=self.format_fetch_worker, daemon=True).start()
 
     def build_ui(self):
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -337,6 +379,9 @@ class VideoApp(ctk.CTk):
         bot_frame = ctk.CTkFrame(self, fg_color="transparent")
         bot_frame.pack(pady=10)
 
+        self.clear_btn = ctk.CTkButton(bot_frame, text="🗑 Очистить", command=self.clear_queue, fg_color="gray", hover_color="#555555", height=40, width=120)
+        self.clear_btn.pack(side="left", padx=10)
+
         self.start_btn = ctk.CTkButton(bot_frame, text="▶ Запустить очередь", command=self.start_queue, fg_color="green", hover_color="darkgreen", height=40, width=200)
         self.start_btn.pack(side="left", padx=10)
         
@@ -360,12 +405,19 @@ class VideoApp(ctk.CTk):
             self.res_combobox.configure(state="readonly")
         else:
             self.res_combobox.configure(state="disabled")
+            
+        if self.queue_items:
+            ans = messagebox.askyesno("Изменение режима", f"Перевести все элементы в текущей очереди в формат '{value}'?")
+            if ans:
+                for item in self.queue_items:
+                    item.change_mode(value)
 
     def toggle_ui(self, state):
         self.url_entry.configure(state=state)
         self.settings_btn.configure(state=state)
         self.btn_add.configure(state=state)
         self.mode_seg.configure(state=state)
+        self.clear_btn.configure(state=state)
         if state == "disabled" or self.mode_var.get() != "Видео":
             self.res_combobox.configure(state="disabled")
         else:
@@ -374,12 +426,52 @@ class VideoApp(ctk.CTk):
     def refresh_settings(self):
         self.settings = SettingsManager.load()
         show_audio = self.settings.get("add_translation")
-        # Интерактивное обновление кнопок на всех существующих карточках
         for item in self.queue_items:
             item.toggle_audio_btn(show_audio)
 
     def open_settings(self): SettingsWindow(self)
 
+    # --- ФОНОВЫЙ ПАРСИНГ ФОРМАТОВ ---
+    def request_format_fetch(self, item):
+        self.format_fetch_queue.put(item)
+
+    def format_fetch_worker(self):
+        while True:
+            item = self.format_fetch_queue.get()
+            if not item.winfo_exists() or item.mode != "Видео":
+                self.format_fetch_queue.task_done()
+                continue
+
+            try:
+                cmd = [self.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', item.url]
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', **kwargs)
+                
+                if res.returncode == 0:
+                    info = json.loads(res.stdout.splitlines()[0]) 
+                    formats = info.get('formats', [])
+                    max_h = 0
+                    for f in formats:
+                        w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
+                        dim = max(w, h)
+                        if dim > max_h: max_h = dim
+                    
+                    if max_h >= 2160: max_val = 2160
+                    elif max_h >= 1080: max_val = 1080
+                    elif max_h >= 720: max_val = 720
+                    elif max_h >= 480: max_val = 480
+                    else: max_val = 360
+                else:
+                    max_val = 1080 
+            except:
+                max_val = 1080 
+
+            # Генерация списка форматов (вниз от максимального)
+            all_res = [(2160, "4K (2160p)"), (1080, "1080p HD"), (720, "720p HD"), (480, "480p SD"), (360, "360p")]
+            res_list = [name for h, name in all_res if h <= max_val] or ["360p"]
+            
+            self.after(0, item.set_available_resolutions, res_list, self.res_combobox.get())
+            self.format_fetch_queue.task_done()
 
     # --- АНАЛИЗ И ЗАЩИТА ОТ ДУБЛЕЙ ---
     def fetch_and_add(self):
@@ -391,26 +483,21 @@ class VideoApp(ctk.CTk):
 
     def _analyze_url_thread(self, url):
         try:
-            cmd = [self.ytdlp_path, '--dump-json', '--no-check-certificate']
-            
-            # Умное определение: видео или плейлист
-            if any(x in url for x in ["watch?v=", "youtu.be/", "shorts/"]):
-                cmd.append('--no-playlist')
-            else:
-                cmd.append('--flat-playlist')
-            
-            cmd.append(url)
+            # Всегда используем --flat-playlist для мгновенного ответа
+            cmd = [self.ytdlp_path, '--dump-json', '--ignore-errors', '--no-check-certificate', '--flat-playlist', url]
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
             
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, **kwargs)
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='ignore', **kwargs)
             
             videos = []
-            # Потоковое чтение вывода для отображения прогресса парсинга
             for line in process.stdout:
+                line = line.strip()
+                if not line: continue
                 try:
                     data = json.loads(line)
-                    videos.append(data)
-                    self.after(0, lambda c=len(videos): self.status_label.configure(text=f"Анализ... Найдено видео: {c}", text_color="black"))
+                    if data.get('id'): # Отсекаем мусор
+                        videos.append(data)
+                        self.after(0, lambda c=len(videos): self.status_label.configure(text=f"Анализ... Найдено видео: {c}", text_color="black"))
                 except: pass
                 
             process.wait()
@@ -422,7 +509,7 @@ class VideoApp(ctk.CTk):
                 self.after(0, lambda: self.add_items_to_queue(videos))
 
         except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Ошибка", f"Не удалось проанализировать ссылку:\n{e}"))
+            self.after(0, lambda e=e: messagebox.showerror("Ошибка", f"Не удалось проанализировать ссылку:\n{e}"))
             self.after(0, lambda: self.status_label.configure(text="Ошибка анализа", text_color="red"))
         finally:
             self.after(0, lambda: self.btn_add.configure(state="normal", text="Добавить"))
@@ -432,21 +519,23 @@ class VideoApp(ctk.CTk):
         mode = self.mode_var.get()
         global_res_str = self.res_combobox.get()
         
-        existing_urls = set(item.url for item in self.queue_items)
+        # Проверка дубликатов по ID видео, а не по ссылке
+        existing_ids = set(item.video_id for item in self.queue_items)
         added_count = 0
         
         for vid in videos_list:
-            vid_url = vid.get('url') or f"https://www.youtube.com/watch?v={vid.get('id')}"
-            if vid_url in existing_urls:
-                continue # Пропускаем дубликаты
+            vid_id = vid.get('id')
+            if vid_id in existing_ids:
+                continue 
                 
             item = QueueItemWidget(self.queue_frame, self, vid, mode, global_res_str)
             item.pack(fill="x", pady=5)
             self.queue_items.append(item)
+            existing_ids.add(vid_id)
             added_count += 1
             
         if added_count == 0 and videos_list:
-            self.status_label.configure(text="Все выбранные видео уже есть в очереди.", text_color="orange")
+            self.status_label.configure(text="Выбранные видео уже есть в очереди.", text_color="orange")
         else:
             self.update_queue_status()
 
@@ -454,6 +543,13 @@ class VideoApp(ctk.CTk):
         total = len(self.queue_items)
         self.status_label.configure(text=f"В очереди: {total} видео.", text_color="black")
 
+    def clear_queue(self):
+        to_remove = [item for item in self.queue_items if item.status not in ["downloading", "processing"]]
+        for item in to_remove:
+            item.pack_forget()
+            item.destroy()
+            self.queue_items.remove(item)
+        self.update_queue_status()
 
     # --- ЗАПУСК ОЧЕРЕДИ ---
     def stop_process(self):
@@ -482,6 +578,11 @@ class VideoApp(ctk.CTk):
     def _process_queue_thread(self):
         for item in self.queue_items:
             if self.stop_requested: break
+            
+            # Ждем пока фоновый сканер не отдаст нам список разрешений
+            while item.status == "fetching_formats" and not self.stop_requested:
+                time.sleep(0.5)
+                
             if item.status == "waiting" or item.status == "error":
                 self.download_item(item)
                 
@@ -496,9 +597,8 @@ class VideoApp(ctk.CTk):
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
             
-            # Достаем индивидуальное разрешение из карточки видео
             res_raw = item.item_res_var.get()
-            res_num = int(res_raw.split("p")[0]) if "p" in res_raw else 1080
+            res_num = 2160 if "4K" in res_raw else (int(res_raw.split("p")[0]) if "p" in res_raw else 1080)
             
             if is_audio:
                 base_name = f"{safe_title}.mp3"
