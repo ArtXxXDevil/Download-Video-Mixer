@@ -47,7 +47,7 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logging.info("="*40)
-logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: Positional Icon) ---")
+logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: Removed FilePicker Overlay) ---")
 
 class SettingsManager:
     @staticmethod
@@ -117,6 +117,10 @@ class VideoMixerApp:
 
         self.format_fetch_queue = queue.Queue()
         
+        # Новый FilePicker (создаем экземпляр, но НЕ добавляем на страницу)
+        self.file_picker = ft.FilePicker(on_result=self.on_dir_selected)
+        self.page.overlay.append(self.file_picker)
+        
         self.setup_ui()
         
         threading.Thread(target=self.check_dependencies, daemon=True).start()
@@ -144,10 +148,6 @@ class VideoMixerApp:
                     except: pass
 
     def setup_ui(self):
-        self.dir_picker = ft.FilePicker()
-        self.dir_picker.on_result = self.on_dir_selected
-        self.page.overlay.append(self.dir_picker)
-
         self.url_input = ft.TextField(
             hint_text="https://www.youtube.com/watch?v=...",
             expand=True,
@@ -181,7 +181,7 @@ class VideoMixerApp:
             filled=True,
             bgcolor="#1C1C1E",
             border_color="transparent",
-            on_select=self.on_mode_change
+            on_change=self.on_mode_change
         )
         
         self.global_res_dropdown = ft.Dropdown(
@@ -212,7 +212,6 @@ class VideoMixerApp:
 
         self.status_text = ft.Text(value="Ожидание ссылок...", color="#8A8A8A", size=13)
         self.btn_clear = ft.TextButton(
-            # ИСПРАВЛЕНО: Убрано name= из ft.Icon
             content=ft.Row([ft.Icon("delete_outline"), ft.Text(value="Очистить очередь")], alignment="center", spacing=5), 
             on_click=self.clear_queue
         )
@@ -311,9 +310,9 @@ class VideoMixerApp:
             self.page.close(self.dlg_settings)
 
         def pick_dir(e):
-            self.dir_picker_caller = "settings"
+            self.file_picker_caller = "settings"
             self.settings_path_input = path_input
-            self.dir_picker.get_directory_path(dialog_title="Выберите папку для сохранения")
+            self.file_picker.get_directory_path("Выберите папку для сохранения")
 
         content = ft.Column([
             switch_trans,
@@ -330,14 +329,14 @@ class VideoMixerApp:
         )
         self.page.open(self.dlg_settings)
 
-    def on_dir_selected(self, e):
+    def on_dir_selected(self, e: ft.FilePickerResultEvent):
         try:
             if e.path:
                 logging.info(f"Выбрана папка: {e.path}")
-                if getattr(self, "dir_picker_caller", "") == "settings":
+                if getattr(self, "file_picker_caller", "") == "settings":
                     self.settings_path_input.value = e.path
                     self.settings_path_input.update()
-                elif getattr(self, "dir_picker_caller", "") == "start_queue":
+                elif getattr(self, "file_picker_caller", "") == "start_queue":
                     self.settings["save_path"] = e.path
                     SettingsManager.save(self.settings)
                     self.start_queue(None)
@@ -560,8 +559,8 @@ class VideoMixerApp:
             return
             
         if not self.settings["save_path"]:
-            self.dir_picker_caller = "start_queue"
-            self.dir_picker.get_directory_path(dialog_title="Выберите папку для сохранения")
+            self.file_picker_caller = "start_queue"
+            self.file_picker.get_directory_path("Выберите папку для сохранения")
             return
 
         if self.is_downloading:
