@@ -47,7 +47,7 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logging.info("="*40)
-logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: on_select) ---")
+logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: Positional Icon) ---")
 
 class SettingsManager:
     @staticmethod
@@ -170,7 +170,6 @@ class VideoMixerApp:
 
         top_row = ft.Row([self.btn_settings, self.url_input, self.btn_add], alignment="spaceBetween")
 
-        # ИСПРАВЛЕНИЕ FLET 0.24+: Используем on_select вместо on_change
         self.mode_dropdown = ft.Dropdown(
             options=[
                 ft.dropdown.Option(key="Видео", text="Режим: Видео"),
@@ -213,7 +212,8 @@ class VideoMixerApp:
 
         self.status_text = ft.Text(value="Ожидание ссылок...", color="#8A8A8A", size=13)
         self.btn_clear = ft.TextButton(
-            content=ft.Row([ft.Icon(name="delete_outline"), ft.Text(value="Очистить очередь")], alignment="center", spacing=5), 
+            # ИСПРАВЛЕНО: Убрано name= из ft.Icon
+            content=ft.Row([ft.Icon("delete_outline"), ft.Text(value="Очистить очередь")], alignment="center", spacing=5), 
             on_click=self.clear_queue
         )
         
@@ -320,7 +320,7 @@ class VideoMixerApp:
             ft.Text(value="Громкость оригинала:"), slider_vol_orig,
             ft.Text(value="Громкость перевода:"), slider_vol_trans,
             ft.Text(value="Папка для сохранения:"),
-            ft.Row([path_input, ft.IconButton(icon="folder_open", on_click=pick_dir)])
+            ft.Row([path_input, ft.IconButton("folder_open", on_click=pick_dir)])
         ], width=400, height=350, spacing=5)
 
         self.dlg_settings = ft.AlertDialog(
