@@ -47,7 +47,7 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logging.info("="*40)
-logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: Removed SegmentedButton) ---")
+logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: on_select) ---")
 
 class SettingsManager:
     @staticmethod
@@ -170,7 +170,7 @@ class VideoMixerApp:
 
         top_row = ft.Row([self.btn_settings, self.url_input, self.btn_add], alignment="spaceBetween")
 
-        # --- ИСПРАВЛЕНИЕ: Заменили забагованный SegmentedButton на безопасный Dropdown ---
+        # ИСПРАВЛЕНИЕ FLET 0.24+: Используем on_select вместо on_change
         self.mode_dropdown = ft.Dropdown(
             options=[
                 ft.dropdown.Option(key="Видео", text="Режим: Видео"),
@@ -182,7 +182,7 @@ class VideoMixerApp:
             filled=True,
             bgcolor="#1C1C1E",
             border_color="transparent",
-            on_change=self.on_mode_change
+            on_select=self.on_mode_change
         )
         
         self.global_res_dropdown = ft.Dropdown(
@@ -573,7 +573,6 @@ class VideoMixerApp:
         self.stop_requested = False
         self.is_downloading = True
         
-        # Обновляем кнопку без kwargs (позиционными аргументами)
         self.btn_start.content = ft.Row([ft.Icon("stop_rounded"), ft.Text("ОСТАНОВИТЬ")], alignment="center", spacing=5)
         self.btn_start.style.bgcolor = "#D32F2F"
         self.toggle_ui(True)
