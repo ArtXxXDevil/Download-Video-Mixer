@@ -1,4 +1,5 @@
-import flet as ft
+import customtkinter as ctk
+from tkinter import filedialog, messagebox, Menu
 import subprocess
 import threading
 import os
@@ -13,41 +14,14 @@ import ssl
 import re
 import queue
 import time
-import logging
 
-# --- ЛОГИКА ПУТЕЙ ---
-if getattr(sys, "frozen", False):
+if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def get_data_dir():
-    if platform.system() == "Windows":
-        root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    elif platform.system() == "Darwin":
-        root = os.path.expanduser("~/Library/Application Support")
-    else:
-        root = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    path = os.path.join(root, "Download Video Mixer")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-APP_DIR = get_data_dir()
+APP_DIR = BASE_DIR
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
-
-if platform.system() == "Windows":
-    LOG_FILE = os.path.join(BASE_DIR, "mixer_debug.log")
-else:
-    LOG_FILE = os.path.join(APP_DIR, "mixer_debug.log")
-
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(threadName)s: %(message)s',
-    encoding='utf-8'
-)
-logging.info("="*40)
-logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Strict Enums) ---")
 
 class SettingsManager:
     @staticmethod
@@ -62,77 +36,782 @@ class SettingsManager:
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     return {**defaults, **json.load(f)}
-            except Exception as e:
-                logging.error(f"Ошибка загрузки настроек: {e}")
+            except:
                 return defaults
         return defaults
 
     @staticmethod
     def save(settings):
-        try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(settings, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            logging.error(f"Ошибка сохранения настроек: {e}")
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=4)
 
-# --- ГЛАВНЫЙ КЛАСС ПРИЛОЖЕНИЯ ---
-class VideoMixerApp:
-    def __init__(self, page: ft.Page):
-        self.page = page
-        self.page.title = "YTD Mixer v4.0"
-        self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.bgcolor = "#0E0E12" 
-        self.page.window.width = 700
-        self.page.window.height = 750
-        self.page.padding = 20
-        self.page.window.center()
+class SettingsWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Настройки")
         
-        self.page.window.prevent_close = False
-        self.page.window.on_event = self.window_event
+        window_width = 400
+        window_height = 360
+        
+        parent.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
+        y = parent.winfo_y() + (parent.winfo_height() // 2) - (window_height // 2)
+        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.transient(parent)
+        self.grab_set()
+        self.focus_set()
 
-        self.os_name = platform.system()
+        if getattr(parent, 'icon_path', None):
+            self.after(250, lambda: self.wm_iconbitmap(parent.icon_path))
+
         self.settings = SettingsManager.load()
-        self.queue_items = []
+
+        ctk.CTkLabel(self, text="Параметры аудио", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+
+        self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
+        self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.toggle_sliders)
+        self.check_trans.pack(pady=5)
+
+        self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
+        self.lbl_vol1.pack()
+        self.slider_vol1 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
+        self.slider_vol1.set(self.settings["vol_original"])
+        self.slider_vol1.pack(pady=5)
+
+        self.lbl_vol2 = ctk.CTkLabel(self, text=f"Громкость перевода: {self.settings['vol_translate']}%")
+        self.lbl_vol2.pack()
+        self.slider_vol2 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
+        self.slider_vol2.set(self.settings["vol_translate"])
+        self.slider_vol2.pack(pady=5)
+
+        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(15, 5))
+        self.path_entry = ctk.CTkEntry(self, width=300)
+        self.path_entry.insert(0, self.settings["save_path"])
+        self.path_entry.pack(pady=5)
+        ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5)
+
+        self.toggle_sliders()
+
+    def toggle_sliders(self):
+        state = "normal" if self.trans_var.get() else "disabled"
+        self.slider_vol1.configure(state=state)
+        self.slider_vol2.configure(state=state)
+
+    def update_labels(self, _=None):
+        self.lbl_vol1.configure(text=f"Громкость оригинала: {int(self.slider_vol1.get())}%")
+        self.lbl_vol2.configure(text=f"Громкость перевода: {int(self.slider_vol2.get())}%")
+
+    def browse_folder(self):
+        current_path = self.path_entry.get()
+        initial = os.path.abspath(current_path) if current_path and os.path.exists(current_path) else BASE_DIR
+        path = filedialog.askdirectory(initialdir=initial)
+        if path:
+            self.path_entry.delete(0, "end")
+            self.path_entry.insert(0, os.path.abspath(path))
+
+    def on_close(self):
+        new_settings = {
+            "add_translation": self.trans_var.get(),
+            "vol_original": int(self.slider_vol1.get()),
+            "vol_translate": int(self.slider_vol2.get()),
+            "save_path": self.path_entry.get()
+        }
+        SettingsManager.save(new_settings)
+        self.parent.refresh_settings()
+        self.grab_release()
+        self.destroy()
+
+class PlaylistDialog(ctk.CTkToplevel):
+    def __init__(self, parent, videos):
+        super().__init__(parent)
+        self.parent = parent
+        self.videos = videos
+        self.selected_videos = []
+        
+        self.title("Плейлист обнаружен")
+        self.geometry("500x470")
+        
+        parent.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() // 2) - 250
+        y = parent.winfo_y() + (parent.winfo_height() // 2) - 235
+        self.geometry(f"+{x}+{y}")
+        self.transient(parent)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="Выберите видео для загрузки:", font=("Arial", 14, "bold")).pack(pady=(10, 0))
+        
+        self.total_count = len(self.videos)
+        self.lbl_count = ctk.CTkLabel(self, text=f"Выбрано: {self.total_count} из {self.total_count}", font=("Arial", 12))
+        self.lbl_count.pack(pady=(0, 5))
+        
+        self.scroll = ctk.CTkScrollableFrame(self, width=450, height=300)
+        self.scroll.pack(pady=5, padx=10, fill="both", expand=True)
+
+        self.checkboxes = []
+        for vid in self.videos:
+            var = ctk.BooleanVar(value=True)
+            title = vid.get('title', 'Без названия')
+            duration = vid.get('duration', 0)
+            dur_str = f" ({int(duration)//60}:{int(duration)%60:02d})" if duration else ""
+            
+            cb = ctk.CTkCheckBox(self.scroll, text=f"{title}{dur_str}", variable=var, command=self.update_count)
+            cb.pack(anchor="w", pady=2, padx=5)
+            self.checkboxes.append((var, vid))
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        
+        ctk.CTkButton(btn_frame, text="Добавить выбранные", command=self.confirm, fg_color="green", hover_color="darkgreen").pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Отмена", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
+
+    def update_count(self):
+        selected = sum(1 for var, _ in self.checkboxes if var.get())
+        self.lbl_count.configure(text=f"Выбрано: {selected} из {self.total_count}")
+
+    def confirm(self):
+        for var, vid in self.checkboxes:
+            if var.get():
+                self.selected_videos.append(vid)
+        self.parent.add_items_to_queue(self.selected_videos)
+        self.destroy()
+
+class QueueItemWidget(ctk.CTkFrame):
+    def __init__(self, master, app, video_info, mode, global_res_str):
+        super().__init__(master)
+        self.app = app
+        self.video_id = video_info.get('id', '')
+        self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
+        self.title_text = video_info.get('title', 'Видео')
+        self.mode = mode
+        self.status = "waiting" 
+        
+        self.use_yandex_translation = False
+        
+        top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        top_frame.pack(fill="x", padx=5, pady=2)
+        
+        display_title = (self.title_text[:50] + '...') if len(self.title_text) > 50 else self.title_text
+        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"))
+        self.lbl_title.pack(side="left")
+        
+        self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
+        self.btn_remove.pack(side="right")
+        
+        # Кнопка перезапуска
+        self.btn_restart = ctk.CTkButton(top_frame, text="🔄", width=30, height=24, fg_color="transparent", text_color="blue", hover_color="#ccccff", command=self.restart_self)
+        self.btn_restart.pack(side="right", padx=(0, 5))
+
+        self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.mid_frame.pack(fill="x", padx=5, pady=2)
+
+        self.item_res_var = ctk.StringVar(value=global_res_str)
+        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
+        self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
+        
+        self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Перевод [ВКЛ]", height=24, width=130, command=self.toggle_yandex)
+
+        self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
+        self.lbl_status.pack(side="right")
+
+        self.setup_mode_ui()
+
+        bot_frame = ctk.CTkFrame(self, fg_color="transparent")
+        bot_frame.pack(fill="x", padx=5, pady=(2, 5))
+        
+        self.progress = ctk.CTkProgressBar(bot_frame)
+        self.progress.set(0)
+        self.progress.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
+        self.lbl_percent.pack(side="right")
+
+    def setup_mode_ui(self):
+        self.combo_res.pack_forget()
+        self.lbl_mp3.pack_forget()
+        self.btn_yandex.pack_forget()
+        
+        if self.mode == "Видео":
+            self.combo_res.pack(side="left", padx=(0, 10))
+            self.update_yandex_visibility(self.app.settings.get("add_translation"))
+            
+            if self.combo_res.cget("values") == ["4K (2160p)"] and self.status == "waiting":
+                self.status = "fetching_formats"
+                self.item_res_var.set("Загрузка...")
+                self.combo_res.configure(state="disabled")
+                self.app.request_format_fetch(self)
+        else:
+            self.lbl_mp3.pack(side="left", padx=(0, 10))
+            if self.status == "fetching_formats":
+                self.status = "waiting"
+
+    def change_mode(self, new_mode):
+        if self.mode == new_mode: return
+        self.mode = new_mode
+        self.setup_mode_ui()
+
+    def set_available_resolutions(self, res_list, global_res_str):
+        if not self.winfo_exists(): return
+        state = "disabled" if self.app.is_downloading else "readonly"
+        self.combo_res.configure(values=res_list, state=state)
+        
+        global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
+        
+        selected = res_list[0] 
+        for r in res_list:
+            val = 2160 if "4K" in r else (int(r.split("p")[0]) if "p" in r else 0)
+            if val <= global_val:
+                selected = r
+                break 
+                
+        self.item_res_var.set(selected)
+        if self.status == "fetching_formats":
+            self.status = "waiting"
+
+    def update_yandex_visibility(self, global_trans):
+        if self.mode != "Видео":
+            self.btn_yandex.pack_forget()
+            return
+            
+        if global_trans:
+            if not self.btn_yandex.winfo_ismapped():
+                self.btn_yandex.pack(side="left", padx=5)
+                self.use_yandex_translation = True
+                self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+        else:
+            self.btn_yandex.pack_forget()
+            self.use_yandex_translation = False
+
+    def toggle_yandex(self):
+        if self.app.is_downloading: return
+        self.use_yandex_translation = not self.use_yandex_translation
+        if self.use_yandex_translation:
+            self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+        else:
+            self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
+
+    def update_progress(self, percent):
+        self.progress.set(percent / 100.0)
+        self.lbl_percent.configure(text=f"{int(percent)}%")
+        
+    def set_status(self, text, color="black"):
+        self.lbl_status.configure(text=text, text_color=color)
+
+    def remove_self(self):
+        if self.status in ["downloading", "processing"]:
+            messagebox.showwarning("Внимание", "Дождитесь окончания или остановите очередь, чтобы удалить активный элемент.")
+            return
+        self.app.queue_items.remove(self)
+        self.pack_forget()
+        self.destroy()
+        self.app.update_queue_status()
+
+    def restart_self(self):
+        if self.status in ["downloading", "processing"]:
+            messagebox.showwarning("Внимание", "Дождитесь окончания или остановите очередь, чтобы перезапустить элемент.")
+            return
+        
+        self.status = "waiting"
+        self.set_status("В очереди", "gray")
+        self.update_progress(0)
+        self.app.update_queue_status()
+
+
+class VideoApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Download Video Mixer v3.5 (VOT-CLI Core Fixed)")
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        self.os_name = platform.system()
         self.stop_requested = False
         self.is_downloading = False
+        self.queue_items = [] 
+        
+        def resource_path(relative_path):
+            try: base_path = sys._MEIPASS
+            except: base_path = os.path.abspath(".")
+            return os.path.join(base_path, relative_path)
 
-        self.arch = platform.machine().lower()
-
+        self.icon_path = None
         if self.os_name == "Windows":
-            self.ffmpeg_exe_name, self.ytdlp_exe_name, self.vot_exe_name = "ffmpeg.exe", "yt-dlp.exe", "vot-cli.exe"
+            icon_path = resource_path("icon.ico")
+            if os.path.exists(icon_path):
+                self.icon_path = icon_path
+                self.iconbitmap(icon_path)
+        
+        self.geometry("650x600")
+        self.settings = SettingsManager.load()
+        
+        if self.os_name == "Windows":
+            self.ffmpeg_exe_name = "ffmpeg.exe"
+            self.ytdlp_exe_name = "yt-dlp.exe"
+            self.vot_exe_name = "vot-cli.exe"
+            
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-windows-x64.exe.zip"
-            self.startupinfo = subprocess.STARTUPINFO()
-            self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-windows-x64.exe.zip" 
         else:
-            self.ffmpeg_exe_name, self.ytdlp_exe_name, self.vot_exe_name = "ffmpeg", "yt-dlp", "vot-cli"
+            self.ffmpeg_exe_name = "ffmpeg"
+            self.ytdlp_exe_name = "yt-dlp"
+            self.vot_exe_name = "vot-cli"
+            
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-            vot_arch = "arm64" if self.arch in ("arm64", "aarch64") else "x64"
-            self.vot_url = f"https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-macos-{vot_arch}.zip"
-            self.startupinfo = None
-
+            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-macos-x64.zip" 
+            
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
         self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
         self.vot_path = os.path.join(APP_DIR, self.vot_exe_name)
 
+        self.startupinfo = None
+        if self.os_name == "Windows":
+            self.startupinfo = subprocess.STARTUPINFO()
+            self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        self.build_ui()
+        
         self.format_fetch_queue = queue.Queue()
-        
-        self.setup_ui()
-        
         threading.Thread(target=self.check_dependencies, daemon=True).start()
         threading.Thread(target=self.format_fetch_worker, daemon=True).start()
 
-    def window_event(self, e):
-        if e.data == "close":
+    def build_ui(self):
+        top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        top_frame.pack(pady=10, padx=20, fill="x")
+
+        self.settings_btn = ctk.CTkButton(top_frame, text="⚙", width=40, command=self.open_settings)
+        self.settings_btn.pack(side="left", padx=(0, 10))
+
+        self.url_entry = ctk.CTkEntry(top_frame, placeholder_text="Вставьте ссылку на видео или плейлист...", width=380)
+        self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        self.context_menu = Menu(self, tearoff=0, font=("Arial", 10))
+        self.context_menu.add_command(label="Вставить", command=self.paste_text)
+        self.context_menu.add_command(label="Копировать", command=self.copy_text)
+        self.context_menu.add_command(label="Вырезать", command=self.cut_text)
+        self.context_menu.add_command(label="Выделить всё", command=self.select_all)
+        self.url_entry.bind("<Button-3>", lambda e: self.context_menu.tk_popup(e.x_root, e.y_root))
+        self.url_entry.bind("<Button-2>", lambda e: self.context_menu.tk_popup(e.x_root, e.y_root))
+        
+        self.btn_add = ctk.CTkButton(top_frame, text="Добавить", width=100, command=self.fetch_and_add)
+        self.btn_add.pack(side="right")
+
+        param_frame = ctk.CTkFrame(self, fg_color="transparent")
+        param_frame.pack(pady=5)
+        
+        self.mode_var = ctk.StringVar(value="Видео")
+        self.mode_seg = ctk.CTkSegmentedButton(param_frame, values=["Видео", "Только Аудио (MP3)"], variable=self.mode_var, command=self.on_mode_change)
+        self.mode_seg.pack(side="left", padx=10)
+        
+        ctk.CTkLabel(param_frame, text="Глобальное качество:").pack(side="left", padx=(10, 5))
+        self.res_combobox = ctk.CTkComboBox(param_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], state="readonly", width=125)
+        self.res_combobox.pack(side="left", padx=5)
+        self.res_combobox.set("4K (2160p)")
+
+        self.queue_frame = ctk.CTkScrollableFrame(self, width=600, height=300)
+        self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
+
+        bot_frame = ctk.CTkFrame(self, fg_color="transparent")
+        bot_frame.pack(pady=10)
+
+        self.clear_btn = ctk.CTkButton(bot_frame, text="🗑 Очистить", command=self.clear_queue, fg_color="gray", hover_color="#555555", height=40, width=120)
+        self.clear_btn.pack(side="left", padx=10)
+
+        self.start_btn = ctk.CTkButton(bot_frame, text="▶ Запустить очередь", command=self.start_queue, fg_color="green", hover_color="darkgreen", height=40, width=200)
+        self.start_btn.pack(side="left", padx=10)
+        
+        self.status_label = ctk.CTkLabel(self, text="Ожидание ссылок...", text_color="gray")
+        self.status_label.pack(pady=(0, 10))
+
+    def paste_text(self, event=None):
+        try:
+            self.url_entry.delete(0, "end") 
+            self.url_entry.insert(0, self.clipboard_get())
+        except: pass
+        return "break"
+    def copy_text(self, event=None):
+        if self.url_entry.get(): self.clipboard_clear(); self.clipboard_append(self.url_entry.get())
+        return "break"
+    def cut_text(self, event=None): self.copy_text(); self.url_entry.delete(0, "end"); return "break"
+    def select_all(self, event=None): self.url_entry.select_range(0, "end"); self.url_entry.icursor("end"); return "break"
+
+    def on_mode_change(self, value):
+        if value == "Видео":
+            self.res_combobox.configure(state="readonly")
+        else:
+            self.res_combobox.configure(state="disabled")
+            
+        if self.queue_items:
+            needs_change = any(item.mode != value for item in self.queue_items)
+            if needs_change:
+                ans = messagebox.askyesno("Изменение режима", f"Перевести все элементы в текущей очереди в формат '{value}'?")
+                if ans:
+                    for item in self.queue_items:
+                        item.change_mode(value)
+
+    def toggle_ui(self, state):
+        self.url_entry.configure(state=state)
+        self.settings_btn.configure(state=state)
+        self.btn_add.configure(state=state)
+        self.mode_seg.configure(state=state)
+        self.clear_btn.configure(state=state)
+        
+        if state == "disabled" or self.mode_var.get() != "Видео":
+            self.res_combobox.configure(state="disabled")
+        else:
+            self.res_combobox.configure(state="readonly")
+            
+        for item in self.queue_items:
+            if state == "disabled":
+                item.combo_res.configure(state="disabled")
+                item.btn_yandex.configure(state="disabled")
+            else:
+                if item.mode == "Видео":
+                    item.combo_res.configure(state="readonly")
+                    item.btn_yandex.configure(state="normal")
+
+    def refresh_settings(self):
+        self.settings = SettingsManager.load()
+        global_trans = self.settings.get("add_translation")
+        for item in self.queue_items:
+            item.update_yandex_visibility(global_trans)
+
+    def open_settings(self): SettingsWindow(self)
+
+    def request_format_fetch(self, item):
+        self.format_fetch_queue.put(item)
+
+    def format_fetch_worker(self):
+        while True:
+            item = self.format_fetch_queue.get()
+            if not item.winfo_exists() or item.mode != "Видео":
+                self.format_fetch_queue.task_done()
+                continue
+
+            try:
+                cmd = [self.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', item.url]
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', **kwargs)
+                
+                if res.returncode == 0:
+                    info = json.loads(res.stdout.splitlines()[0]) 
+                    formats = info.get('formats', [])
+                    max_h = 0
+                    for f in formats:
+                        w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
+                        dim = max(w, h)
+                        if dim > max_h: max_h = dim
+                    
+                    if max_h >= 2160: max_val = 2160
+                    elif max_h >= 1080: max_val = 1080
+                    elif max_h >= 720: max_val = 720
+                    elif max_h >= 480: max_val = 480
+                    else: max_val = 360
+                else:
+                    max_val = 1080 
+            except:
+                max_val = 1080 
+
+            all_res = [(2160, "4K (2160p)"), (1080, "1080p FullHD"), (720, "720p HD"), (480, "480p SD"), (360, "360p SD")]
+            res_list = [name for h, name in all_res if h <= max_val] or ["360p SD"]
+            
+            self.after(0, item.set_available_resolutions, res_list, self.res_combobox.get())
+            self.format_fetch_queue.task_done()
+
+    def fetch_and_add(self):
+        url = self.url_entry.get().strip()
+        if len(url) < 10: return
+        
+        self.btn_add.configure(state="disabled", text="Анализ...")
+        threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
+
+    def _analyze_url_thread(self, url):
+        try:
+            cmd = [self.ytdlp_path, '--dump-json', '--ignore-errors', '--no-check-certificate', '--flat-playlist', url]
+            kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+            
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='ignore', **kwargs)
+            
+            videos = []
+            for line in process.stdout:
+                line = line.strip()
+                if not line: continue
+                try:
+                    data = json.loads(line)
+                    if data.get('id'):
+                        videos.append(data)
+                        self.after(0, lambda c=len(videos): self.status_label.configure(text=f"Анализ... Найдено видео: {c}", text_color="black"))
+                except: pass
+                
+            process.wait()
+            if not videos: raise Exception("Видео не найдено или доступ закрыт.")
+
+            if len(videos) > 1:
+                self.after(0, lambda: PlaylistDialog(self, videos))
+            else:
+                self.after(0, lambda: self.add_items_to_queue(videos))
+
+        except Exception as e:
+            self.after(0, lambda e=e: messagebox.showerror("Ошибка", f"Не удалось проанализировать ссылку:\n{e}"))
+            self.after(0, lambda: self.status_label.configure(text="Ошибка анализа", text_color="red"))
+        finally:
+            self.after(0, lambda: self.btn_add.configure(state="normal", text="Добавить"))
+            self.after(0, lambda: self.url_entry.delete(0, "end"))
+
+    def add_items_to_queue(self, videos_list):
+        mode = self.mode_var.get()
+        global_res_str = self.res_combobox.get()
+        
+        existing_ids = set(item.video_id for item in self.queue_items)
+        added_count = 0
+        
+        for vid in videos_list:
+            vid_id = vid.get('id')
+            if vid_id in existing_ids:
+                continue 
+                
+            item = QueueItemWidget(self.queue_frame, self, vid, mode, global_res_str)
+            item.pack(fill="x", pady=5)
+            self.queue_items.append(item)
+            existing_ids.add(vid_id)
+            added_count += 1
+            
+        if added_count == 0 and videos_list:
+            self.status_label.configure(text="Выбранные видео уже есть в очереди.", text_color="orange")
+        else:
+            self.update_queue_status()
+
+    def update_queue_status(self):
+        total = len(self.queue_items)
+        self.status_label.configure(text=f"В очереди: {total} видео.", text_color="black")
+
+    def clear_queue(self):
+        to_remove = [item for item in self.queue_items if item.status not in ["downloading", "processing"]]
+        for item in to_remove:
+            item.pack_forget()
+            item.destroy()
+            self.queue_items.remove(item)
+        self.update_queue_status()
+
+    def stop_process(self):
+        self.stop_requested = True
+        self.status_label.configure(text="Остановка текущей загрузки...", text_color="orange")
+        self.start_btn.configure(state="disabled")
+
+    def start_queue(self):
+        if not self.queue_items:
+            messagebox.showinfo("Очередь пуста", "Добавьте видео в очередь перед запуском.")
+            return
+            
+        if not self.settings["save_path"]:
+            path = filedialog.askdirectory(title="Выберите папку для сохранения")
+            if not path: return
+            self.settings["save_path"] = os.path.abspath(path)
+            SettingsManager.save(self.settings)
+
+        self.stop_requested = False
+        self.is_downloading = True
+        self.start_btn.configure(text="⏹ Остановить очередь", command=self.stop_process, fg_color="red", hover_color="darkred")
+        self.toggle_ui("disabled")
+        
+        threading.Thread(target=self._process_queue_thread, daemon=True).start()
+
+    def _process_queue_thread(self):
+        for item in self.queue_items:
+            if self.stop_requested: break
+            
+            while item.status == "fetching_formats" and not self.stop_requested:
+                time.sleep(0.5)
+                
+            if item.status == "waiting" or item.status == "error":
+                self.download_item(item)
+                
+        self.after(0, self.restore_ui_state)
+        
+    def download_item(self, item):
+        process = None
+        process_vot = None
+        actual_translation_path = None
+        try:
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (FOSWLY VOT-CLI)
+            if item.mode == "Видео" and item.use_yandex_translation:
+                item.status = "processing"
+                self.after(0, lambda: item.set_status("Инициализация перевода...", "purple"))
+                
+                translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
+                cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                
+                # Запускаем через Popen, чтобы читать stdout в реальном времени
+                process_vot = subprocess.Popen(cmd_vot, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
+                
+                last_update = 0
+                for line in process_vot.stdout:
+                    if getattr(self, 'stop_requested', False):
+                        process_vot.terminate()
+                        raise Exception("Остановлено")
+                    
+                    line = line.strip()
+                    # Убираем ANSI-коды (цвета консоли), если vot-cli их отправляет
+                    clean_line = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', line).strip()
+                    
+                    if clean_line:
+                        current_time = time.time()
+                        # Ограничиваем частоту обновления UI (макс. 10 раз в сек), чтобы интерфейс не зависал
+                        if current_time - last_update > 0.1:
+                            display_line = clean_line[:35] + ("..." if len(clean_line) > 35 else "")
+                            self.after(0, lambda l=display_line: item.set_status(f"Перевод: {l}", "purple"))
+                            last_update = current_time
+                            
+                process_vot.wait()
+                
+                if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
+                
+                if os.path.exists(translate_temp):
+                    actual_translation_path = translate_temp
+                else:
+                    # Выбрасываем исключение. Это прервет загрузку текущего видео и переведет его в статус "Ошибка"
+                    raise Exception("Ошибка перевода (видео пропущено)")
+
+            # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
+            item.status = "downloading"
+            self.after(0, lambda: item.set_status("Скачивание видео...", "blue"))
+            
+            safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
+            is_audio = (item.mode == "Только Аудио (MP3)")
+            
+            res_raw = item.item_res_var.get()
+            res_num = 2160 if "4K" in res_raw else (int(res_raw.split("p")[0]) if "p" in res_raw else 1080)
+            
+            if is_audio:
+                base_name = f"{safe_title}.mp3"
+                final_name = base_name
+            else:
+                base_name = f"{safe_title} {res_num}p.mp4"
+                final_name = f"{safe_title} {res_num}p (Яндекс).mp4" if actual_translation_path else base_name
+                
+            base_path = os.path.join(self.settings["save_path"], base_name)
+            final_path = os.path.join(self.settings["save_path"], final_name)
+
+            if os.path.exists(final_path):
+                item.status = "done"
+                self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
+                return
+
+            temp_template = os.path.join(self.settings["save_path"], "temp_v.%(ext)s")
+            temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
+            temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
+            
+            if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
+                if is_audio:
+                    cmd = [
+                        self.ytdlp_path, '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
+                        '--audio-quality', '0', '-o', temp_template, '--newline', '--no-playlist', 
+                        '--retries', '20', '--fragment-retries', '20', '--no-check-certificate',
+                        '--ffmpeg-location', self.ffmpeg_path, item.url
+                    ]
+                else:
+                    MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
+                    max_dim = MAX_DIMS.get(res_num, 1920)
+                    cmd = [
+                        self.ytdlp_path, '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                        '-o', temp_video, '--newline', '--no-playlist', '--retries', '20', '--fragment-retries', '20',
+                        '--no-check-certificate', '--ffmpeg-location', self.ffmpeg_path, item.url
+                    ]
+                
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs)
+                
+                last_percent = -1
+                for line in process.stdout:
+                    if self.stop_requested:
+                        process.terminate()
+                        raise Exception("Остановлено")
+                        
+                    match = re.search(r'\[download\]\s+([\d\.]+)%', line)
+                    if match:
+                        percent = float(match.group(1))
+                        if int(percent) > last_percent:
+                            last_percent = int(percent)
+                            self.after(0, item.update_progress, percent)
+                            
+                process.wait()
+                if process.returncode != 0 and not self.stop_requested:
+                    raise Exception("Ошибка загрузки видео")
+
+                actual_temp = temp_mp3 if is_audio else temp_video
+                if os.path.exists(actual_temp):
+                    if os.path.exists(base_path): os.remove(base_path)
+                    os.rename(actual_temp, base_path)
+
+            if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
+
+            # 3. СКЛЕЙКА (FFMPEG)
+            if not is_audio and actual_translation_path:
+                item.status = "processing"
+                self.after(0, lambda: item.set_status("Склейка...", "orange"))
+                
+                v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
+                cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
+                       '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
+                       '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
+                       
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                subprocess.run(cmd_ffmpeg, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+
+            item.status = "done"
+            self.after(0, lambda: (item.set_status("✅ Готово", "green"), item.update_progress(100)))
+            
+        except Exception as e:
+            if process and process.poll() is None: process.terminate() 
+            if process_vot and process_vot.poll() is None: process_vot.terminate() 
+            
+            item.status = "error"
+            err_msg = str(e)
+            
+            if "Остановлено" in err_msg:
+                status_msg = "⏹ Остановлено"
+            elif "Ошибка перевода" in err_msg:
+                status_msg = f"❌ {err_msg}"
+            else:
+                status_msg = "❌ Ошибка"
+                
+            self.after(0, lambda text=status_msg: item.set_status(text, "red"))
+            
+        finally:
+            if actual_translation_path and os.path.exists(actual_translation_path):
+                try: os.remove(actual_translation_path)
+                except: pass
+            self.clean_temp_files()
+
+    def restore_ui_state(self):
+        self.is_downloading = False
+        self.start_btn.configure(text="▶ Запустить очередь", command=self.start_queue, fg_color="green", hover_color="darkgreen", state="normal")
+        
+        done = sum(1 for i in self.queue_items if i.status == "done")
+        total = len(self.queue_items)
+        
+        if self.stop_requested:
+            self.status_label.configure(text=f"Очередь остановлена. Завершено: {done}/{total}", text_color="orange")
+        elif done == total and total > 0:
+            self.status_label.configure(text="🎉 Все загрузки успешно завершены!", text_color="green")
+        else:
+            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}", text_color="red")
+            
+        self.toggle_ui("normal")
+
+    def on_closing(self):
+        if self.is_downloading:
+            if messagebox.askyesno("Подтверждение", "Очередь активна. Прервать и закрыть?"):
+                self.stop_requested = True
+                self.attributes('-disabled', True) 
+                self.after(1500, self._perform_exit)
+        else:
             self._perform_exit()
 
     def _perform_exit(self):
-        logging.info("Выход из программы...")
         self.clean_temp_files()
-        try:
-            self.page.window.destroy()
-        except:
-            pass
+        self.destroy()
         os._exit(0)
 
     def clean_temp_files(self):
@@ -142,232 +821,6 @@ class VideoMixerApp:
                 if file_name.startswith("temp_v") or file_name.startswith("temp_trans_"):
                     try: os.remove(os.path.join(save_dir, file_name))
                     except: pass
-
-    def open_dialog(self, dialog):
-        if hasattr(self.page, "open"):
-            self.page.open(dialog)
-        else:
-            self.page.dialog = dialog
-            dialog.open = True
-            self.page.update()
-
-    def close_dialog(self, dialog):
-        if hasattr(self.page, "close"):
-            self.page.close(dialog)
-        else:
-            dialog.open = False
-            self.page.update()
-
-    def setup_ui(self):
-        self.url_input = ft.TextField(
-            hint_text="https://www.youtube.com/watch?v=...",
-            expand=True,
-            border_radius=8,
-            filled=True,
-            bgcolor="#1C1C1E",
-            border_color="transparent",
-            content_padding=15,
-            prefix_icon="link"
-        )
-        
-        # Нативные стили кнопок (без ButtonStyle)
-        self.btn_add = ft.ElevatedButton(
-            content=ft.Row([ft.Icon("add"), ft.Text(value="Добавить")], alignment=ft.MainAxisAlignment.CENTER, spacing=5),
-            bgcolor="#1976D2", color="#FFFFFF",
-            height=48,
-            on_click=self.fetch_and_add
-        )
-        
-        self.btn_settings = ft.Container(
-            content=ft.Icon("settings"),
-            on_click=self.open_settings,
-            padding=10,
-            ink=True,
-            border_radius=8
-        )
-
-        top_row = ft.Row(
-            [self.btn_settings, self.url_input, self.btn_add], 
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-        )
-
-        self.mode_dropdown = ft.Dropdown(
-            options=[
-                ft.dropdown.Option(key="Видео", text="Режим: Видео"),
-                ft.dropdown.Option(key="Только Аудио (MP3)", text="Режим: Аудио (MP3)"),
-            ],
-            value="Видео",
-            width=220,
-            border_radius=8,
-            filled=True,
-            bgcolor="#1C1C1E",
-            border_color="transparent"
-        )
-        if hasattr(self.mode_dropdown, "on_select"):
-            self.mode_dropdown.on_select = self.on_mode_change
-        else:
-            self.mode_dropdown.on_change = self.on_mode_change
-        
-        self.global_res_dropdown = ft.Dropdown(
-            options=[
-                ft.dropdown.Option(key="4K (2160p)", text="4K (2160p)"),
-                ft.dropdown.Option(key="1080p FullHD", text="1080p FullHD"),
-                ft.dropdown.Option(key="720p HD", text="720p HD"),
-                ft.dropdown.Option(key="480p SD", text="480p SD"),
-                ft.dropdown.Option(key="360p SD", text="360p SD"),
-            ],
-            value="4K (2160p)",
-            width=160,
-            border_radius=8,
-            filled=True,
-            bgcolor="#1C1C1E",
-            border_color="transparent"
-        )
-
-        controls_row = ft.Container(
-            content=ft.Row([
-                self.mode_dropdown, 
-                ft.Row([ft.Text(value="Макс. качество:", color="#B3B3B3"), self.global_res_dropdown])
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            padding=10
-        )
-
-        self.queue_list = ft.ListView(expand=True, spacing=10, auto_scroll=False)
-
-        self.status_text = ft.Text(value="Ожидание ссылок...", color="#8A8A8A", size=13)
-        self.btn_clear = ft.TextButton(
-            content=ft.Row([ft.Icon("delete_outline"), ft.Text(value="Очистить очередь")], alignment=ft.MainAxisAlignment.CENTER, spacing=5), 
-            on_click=self.clear_queue
-        )
-        
-        self.btn_start = ft.ElevatedButton(
-            content=ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment=ft.MainAxisAlignment.CENTER, spacing=5),
-            bgcolor="#43A047", color="#FFFFFF",
-            on_click=self.start_queue
-        )
-
-        bottom_row = ft.Row([
-            ft.Column([self.btn_clear, self.status_text], spacing=2),
-            self.btn_start
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-
-        self.page.add(
-            top_row,
-            controls_row,
-            ft.Divider(color="#2C2C2E"),
-            self.queue_list,
-            ft.Divider(color="#2C2C2E"),
-            bottom_row
-        )
-
-    # --- UI ЛОГИКА ---
-    def show_snack(self, message, color="#4CAF50"):
-        snack = ft.SnackBar(content=ft.Text(value=message), bgcolor=color)
-        if hasattr(self.page, "open"):
-            self.page.open(snack)
-        else:
-            self.page.snack_bar = snack
-            self.page.snack_bar.open = True
-            self.page.update()
-
-    def update_status(self, text, color="#8A8A8A"):
-        self.status_text.value = text
-        self.status_text.color = color
-        self.page.update()
-
-    def toggle_ui(self, disabled: bool):
-        self.url_input.disabled = disabled
-        self.btn_add.disabled = disabled
-        self.btn_settings.disabled = disabled
-        self.mode_dropdown.disabled = disabled
-        self.btn_clear.disabled = disabled
-        self.global_res_dropdown.disabled = disabled if not disabled else True
-        if not disabled and self.mode_dropdown.value != "Видео":
-            self.global_res_dropdown.disabled = True
-            
-        for item in self.queue_items:
-            item.set_disabled(disabled)
-        self.page.update()
-
-    def on_mode_change(self, e):
-        selected = self.mode_dropdown.value
-        self.global_res_dropdown.disabled = (selected != "Видео")
-        logging.info(f"Глобальный режим изменен на: {selected}")
-        
-        if self.queue_items:
-            needs_change = any(item.mode != selected for item in self.queue_items)
-            if needs_change:
-                def dialog_handler(apply):
-                    self.close_dialog(self.dlg_mode)
-                    if apply:
-                        for item in self.queue_items:
-                            item.change_mode(selected)
-
-                self.dlg_mode = ft.AlertDialog(
-                    title=ft.Text(value="Смена режима"),
-                    content=ft.Text(value=f"Перевести все видео в очереди в режим '{selected}'?"),
-                    actions=[
-                        ft.TextButton(content=ft.Text(value="Нет"), on_click=lambda e: dialog_handler(False)),
-                        ft.TextButton(content=ft.Text(value="Да, применить"), on_click=lambda e: dialog_handler(True)),
-                    ],
-                )
-                self.open_dialog(self.dlg_mode)
-        else:
-            self.page.update()
-
-    def open_settings(self, e):
-        switch_trans = ft.Switch(label="Авто-перевод Яндекса", value=self.settings["add_translation"], active_color="#E040FB")
-        slider_vol_orig = ft.Slider(min=0, max=100, value=self.settings["vol_original"], divisions=100, label="{value}%")
-        slider_vol_trans = ft.Slider(min=0, max=100, value=self.settings["vol_translate"], divisions=100, label="{value}%")
-        path_input = ft.TextField(value=self.settings["save_path"], expand=True, read_only=True, height=40)
-
-        def save_and_close(e):
-            self.settings["add_translation"] = switch_trans.value
-            self.settings["vol_original"] = int(slider_vol_orig.value)
-            self.settings["vol_translate"] = int(slider_vol_trans.value)
-            self.settings["save_path"] = path_input.value
-            SettingsManager.save(self.settings)
-            
-            for item in self.queue_items:
-                item.update_yandex_visibility(self.settings["add_translation"])
-            
-            self.close_dialog(self.dlg_settings)
-
-        def pick_dir(e):
-            def run_tkinter():
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes('-topmost', True)
-                folder = filedialog.askdirectory(title="Выберите папку для сохранения")
-                root.destroy()
-                if folder:
-                    path_input.value = folder
-                    path_input.update()
-            
-            threading.Thread(target=run_tkinter, daemon=True).start()
-
-        btn_folder = ft.Container(
-            content=ft.Icon("folder_open"),
-            on_click=pick_dir,
-            padding=10, ink=True, border_radius=8
-        )
-
-        content = ft.Column([
-            switch_trans,
-            ft.Text(value="Громкость оригинала:"), slider_vol_orig,
-            ft.Text(value="Громкость перевода:"), slider_vol_trans,
-            ft.Text(value="Папка для сохранения:"),
-            ft.Row([path_input, btn_folder])
-        ], width=400, height=350, spacing=5)
-
-        self.dlg_settings = ft.AlertDialog(
-            title=ft.Text(value="Настройки", size=20, weight="bold"),
-            content=content,
-            actions=[ft.ElevatedButton(content=ft.Text(value="Сохранить"), on_click=save_and_close)]
-        )
-        self.open_dialog(self.dlg_settings)
 
     def check_dependencies(self):
         ctx = ssl.create_default_context()
@@ -383,26 +836,28 @@ class VideoMixerApp:
 
         for path, url, name in dependencies:
             if not os.path.exists(path):
-                self.update_status(f"Установка ядра {name}...", "#FFC107")
+                self.after(0, lambda n=name: self.status_label.configure(text=f"Скачивание {n}...", text_color="orange"))
                 try:
                     if name == "FFmpeg":
                         dl_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" if self.os_name == "Windows" else "https://evermeet.cx/ffmpeg/getrelease/zip"
-                        temp_path = path + ".zip"
+                        zip_path = os.path.join(APP_DIR, "ffmpeg_temp.zip")
                         req = urllib.request.Request(dl_url, headers=headers)
-                        with urllib.request.urlopen(req, context=ctx) as response, open(temp_path, 'wb') as out_file:
+                        with urllib.request.urlopen(req, context=ctx) as response, open(zip_path, 'wb') as out_file:
                             shutil.copyfileobj(response, out_file)
-                        with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                             for file_info in zip_ref.infolist():
                                 if file_info.filename.endswith(self.ffmpeg_exe_name):
                                     with zip_ref.open(file_info) as source, open(self.ffmpeg_path, "wb") as target:
                                         target.write(source.read())
                                     break
-                        if os.path.exists(temp_path): os.remove(temp_path)
+                        if os.path.exists(zip_path): os.remove(zip_path)
+                        
                     elif name == "vot-cli":
-                        temp_path = path + ".tmp"
+                        temp_path = os.path.join(APP_DIR, "vot_temp.tmp")
                         req = urllib.request.Request(url, headers=headers)
                         with urllib.request.urlopen(req, context=ctx) as response, open(temp_path, 'wb') as out_file:
                             shutil.copyfileobj(response, out_file)
+                        
                         try:
                             with zipfile.ZipFile(temp_path, 'r') as zip_ref:
                                 for file_info in zip_ref.infolist():
@@ -412,7 +867,9 @@ class VideoMixerApp:
                                         break
                         except zipfile.BadZipFile:
                             shutil.copyfile(temp_path, path)
+                            
                         if os.path.exists(temp_path): os.remove(temp_path)
+                        
                     else:
                         req = urllib.request.Request(url, headers=headers)
                         with urllib.request.urlopen(req, context=ctx) as response, open(path, 'wb') as out_file:
@@ -420,502 +877,19 @@ class VideoMixerApp:
                     
                     if self.os_name != "Windows": os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
                 except Exception as e:
-                    self.update_status(f"Ошибка загрузки {name}", "#F44336")
+                    self.after(0, lambda n=name: self.status_label.configure(text=f"❌ Ошибка скачивания {n}", text_color="red"))
+                    print(f"Error downloading {name}: {e}")
                     return
 
-        self.update_status("Проверка обновлений ядер...", "#FFC107")
+        self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
         try:
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
             subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
         except: pass
 
-        self.update_status("✅ Готов к работе", "#4CAF50")
-
-    def request_format_fetch(self, item):
-        self.format_fetch_queue.put(item)
-
-    def format_fetch_worker(self):
-        while True:
-            try:
-                item = self.format_fetch_queue.get()
-                if item not in self.queue_items or item.mode != "Видео":
-                    self.format_fetch_queue.task_done()
-                    continue
-
-                cmd = [self.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', item.url]
-                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', **kwargs)
-                
-                max_val = 1080
-                if res.returncode == 0:
-                    info = json.loads(res.stdout.splitlines()[0]) 
-                    max_h = max([max((f.get('width') or 0), (f.get('height') or 0)) for f in info.get('formats', [])] + [0])
-                    
-                    if max_h >= 2160: max_val = 2160
-                    elif max_h >= 1080: max_val = 1080
-                    elif max_h >= 720: max_val = 720
-                    elif max_h >= 480: max_val = 480
-                    else: max_val = 360
-                
-                all_res = [(2160, "4K (2160p)"), (1080, "1080p FullHD"), (720, "720p HD"), (480, "480p SD"), (360, "360p SD")]
-                res_list = [name for h, name in all_res if h <= max_val] or ["360p SD"]
-                
-                item.set_available_resolutions(res_list, self.global_res_dropdown.value)
-                self.format_fetch_queue.task_done()
-            except Exception as e:
-                logging.error(f"Ошибка в format_fetch_worker: {e}")
-                self.format_fetch_queue.task_done()
-
-    def fetch_and_add(self, e):
-        url = self.url_input.value.strip()
-        if len(url) < 10: return
-        
-        self.btn_add.disabled = True
-        self.page.update()
-        threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
-
-    def _analyze_url_thread(self, url):
-        try:
-            cmd = [self.ytdlp_path, '--dump-json', '--ignore-errors', '--no-check-certificate', '--flat-playlist', url]
-            kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='ignore', **kwargs)
-            
-            videos = []
-            for line in process.stdout:
-                line = line.strip()
-                if not line: continue
-                try:
-                    data = json.loads(line)
-                    if data.get('id'):
-                        videos.append(data)
-                        self.update_status(f"Анализ... Найдено: {len(videos)}", "#FFFFFF")
-                except: pass
-                
-            process.wait()
-            if not videos: 
-                raise Exception("Видео не найдено")
-
-            if len(videos) > 1:
-                self.show_playlist_dialog(videos)
-            else:
-                self.add_items_to_queue(videos)
-
-        except Exception as e:
-            logging.error(f"Ошибка анализа ссылки: {e}")
-            self.show_snack(f"Ошибка: {e}", "#F44336")
-            self.update_status("Ошибка анализа", "#F44336")
-        finally:
-            self.btn_add.disabled = False
-            self.url_input.value = ""
-            self.page.update()
-
-    def show_playlist_dialog(self, videos):
-        total = len(videos)
-        lbl_count = ft.Text(value=f"Выбрано: {total} из {total}", color="#B3B3B3")
-        
-        checkboxes = []
-        def update_count(e):
-            selected = sum(1 for c, _ in checkboxes if c.value)
-            lbl_count.value = f"Выбрано: {selected} из {total}"
-            self.page.update()
-
-        scroll_col = ft.Column(scroll="auto", height=300)
-        for vid in videos:
-            dur = vid.get('duration', 0)
-            dur_str = f" ({int(dur)//60}:{int(dur)%60:02d})" if dur else ""
-            title = (vid.get('title', 'Без названия')[:50] + "...") if len(vid.get('title', '')) > 50 else vid.get('title', 'Без названия')
-            cb = ft.Checkbox(label=f"{title}{dur_str}", value=True, on_change=update_count)
-            checkboxes.append((cb, vid))
-            scroll_col.controls.append(cb)
-
-        def confirm(e):
-            selected_vids = [v for c, v in checkboxes if c.value]
-            self.close_dialog(self.dlg_playlist)
-            self.add_items_to_queue(selected_vids)
-
-        self.dlg_playlist = ft.AlertDialog(
-            title=ft.Text(value="Найден Плейлист", weight="bold"),
-            content=ft.Container(
-                content=ft.Column([lbl_count, ft.Divider(color="#2C2C2E"), scroll_col], tight=True),
-                width=500
-            ),
-            actions=[
-                ft.TextButton(content=ft.Text(value="Отмена"), on_click=lambda e: self.close_dialog(self.dlg_playlist)),
-                ft.ElevatedButton(content=ft.Text(value="Добавить"), on_click=confirm, bgcolor="#43A047", color="#FFFFFF")
-            ]
-        )
-        self.open_dialog(self.dlg_playlist)
-
-    def add_items_to_queue(self, videos_list):
-        mode = self.mode_dropdown.value
-        global_res = self.global_res_dropdown.value
-        
-        existing_ids = set(item.video_id for item in self.queue_items)
-        added = 0
-        
-        for vid in videos_list:
-            vid_id = vid.get('id')
-            if vid_id in existing_ids: continue 
-                
-            item = QueueItemWidget(self, vid, mode, global_res)
-            self.queue_items.append(item)
-            self.queue_list.controls.append(item)
-            existing_ids.add(vid_id)
-            added += 1
-            
-        if added == 0 and videos_list:
-            self.show_snack("Видео уже в очереди", "#FBC02D")
-        
-        self.update_queue_status()
-
-    def update_queue_status(self):
-        total = len(self.queue_items)
-        self.update_status(f"В очереди: {total} элементов", "#B3B3B3")
-
-    def clear_queue(self, e=None):
-        to_remove = [item for item in self.queue_items if item.status not in ["downloading", "processing"]]
-        for item in to_remove:
-            self.queue_list.controls.remove(item)
-            self.queue_items.remove(item)
-        self.update_queue_status()
-
-    def start_queue(self, e):
-        if not self.queue_items:
-            self.show_snack("Очередь пуста!", "#FBC02D")
-            return
-            
-        if not self.settings["save_path"]:
-            def run_tkinter_start():
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes('-topmost', True)
-                folder = filedialog.askdirectory(title="Выберите папку для сохранения")
-                root.destroy()
-                if folder:
-                    self.settings["save_path"] = folder
-                    SettingsManager.save(self.settings)
-                    self.start_queue(None)
-            
-            threading.Thread(target=run_tkinter_start, daemon=True).start()
-            return
-
-        if self.is_downloading:
-            self.stop_requested = True
-            self.btn_start.disabled = True
-            self.update_status("Остановка...", "#FF9800")
-            return
-
-        self.stop_requested = False
-        self.is_downloading = True
-        
-        self.btn_start.content = ft.Row([ft.Icon("stop_rounded"), ft.Text(value="ОСТАНОВИТЬ")], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
-        self.btn_start.bgcolor = "#D32F2F"
-        self.toggle_ui(True)
-        
-        threading.Thread(target=self._process_queue_thread, daemon=True).start()
-
-    def _process_queue_thread(self):
-        try:
-            for item in self.queue_items:
-                if self.stop_requested: break
-                
-                while item.status == "fetching_formats" and not self.stop_requested:
-                    time.sleep(0.5)
-                    
-                if item.status == "waiting" or item.status == "error":
-                    self.download_item(item)
-                    
-        except Exception as e:
-            logging.error(f"Глобальная ошибка очереди: {e}")
-        finally:
-            self.is_downloading = False
-            self.btn_start.content = ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
-            self.btn_start.bgcolor = "#43A047"
-            self.btn_start.disabled = False
-            self.toggle_ui(False)
-            self.update_queue_status()
-
-    def download_item(self, item):
-        process = None
-        try:
-            actual_translation_path = None
-            if item.mode == "Видео" and item.use_yandex:
-                item.set_status("Яндекс переводит...", "#E040FB")
-                
-                translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
-                cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
-                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                
-                subprocess.run(cmd_vot, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-                
-                if self.stop_requested: raise Exception("Остановлено")
-                
-                if os.path.exists(translate_temp):
-                    actual_translation_path = translate_temp
-                else:
-                    item.set_status("⚠️ Перевод не удался", "#FF9800")
-                    time.sleep(1.5)
-
-            item.set_status("Скачивание...", "#42A5F5")
-            
-            safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
-            is_audio = (item.mode == "Только Аудио (MP3)")
-            
-            res_raw = item.combo_res.value
-            res_num = 2160 if "4K" in res_raw else (int(res_raw.split("p")[0]) if "p" in res_raw else 1080)
-            
-            base_name = f"{safe_title}.mp3" if is_audio else f"{safe_title} {res_num}p.mp4"
-            final_name = base_name if is_audio else (f"{safe_title} {res_num}p (Яндекс).mp4" if actual_translation_path else base_name)
-                
-            base_path = os.path.join(self.settings["save_path"], base_name)
-            final_path = os.path.join(self.settings["save_path"], final_name)
-
-            if os.path.exists(final_path):
-                item.set_progress(100)
-                item.set_status("✅ Готово", "#4CAF50")
-                return
-
-            temp_template = os.path.join(self.settings["save_path"], "temp_v.%(ext)s")
-            temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
-            temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
-            
-            if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
-                if is_audio:
-                    cmd = [
-                        self.ytdlp_path, '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
-                        '--audio-quality', '0', '-o', temp_template, '--newline', '--no-playlist', 
-                        '--no-check-certificate', '--ffmpeg-location', self.ffmpeg_path, item.url
-                    ]
-                else:
-                    MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
-                    max_dim = MAX_DIMS.get(res_num, 1920)
-                    cmd = [
-                        self.ytdlp_path, '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                        '-o', temp_video, '--newline', '--no-playlist',
-                        '--no-check-certificate', '--ffmpeg-location', self.ffmpeg_path, item.url
-                    ]
-                
-                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='ignore', **kwargs)
-                
-                last_percent = -1
-                for line in process.stdout:
-                    if self.stop_requested:
-                        process.terminate()
-                        raise Exception("Остановлено")
-                        
-                    match = re.search(r'\[download\]\s+([\d\.]+)%', line)
-                    if match:
-                        percent = float(match.group(1))
-                        if int(percent) > last_percent:
-                            last_percent = int(percent)
-                            item.set_progress(percent)
-                            
-                process.wait()
-                if process.returncode != 0 and not self.stop_requested:
-                    raise Exception("Ошибка загрузки")
-
-                actual_temp = temp_mp3 if is_audio else temp_video
-                if os.path.exists(actual_temp):
-                    if os.path.exists(base_path): os.remove(base_path)
-                    os.rename(actual_temp, base_path)
-
-            if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
-
-            if not is_audio and actual_translation_path:
-                item.set_status("Склейка...", "#FF9800")
-                
-                v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
-                cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
-                       '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
-                       '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
-                       
-                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                subprocess.run(cmd_ffmpeg, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-
-            item.set_progress(100)
-            item.set_status("✅ Готово", "#4CAF50")
-            
-        except Exception as e:
-            if process and process.poll() is None: process.terminate() 
-            item.set_status("❌ Ошибка" if "Остановлено" not in str(e) else "⏹ Остановлено", "#F44336")
-        finally:
-            if actual_translation_path and os.path.exists(actual_translation_path):
-                try: os.remove(actual_translation_path)
-                except: pass
-            
-            save_dir = self.settings.get("save_path", "")
-            if save_dir and os.path.exists(save_dir):
-                for f_name in os.listdir(save_dir):
-                    if f_name.startswith("temp_v") or f_name.startswith("temp_trans_"):
-                        try: os.remove(os.path.join(save_dir, f_name))
-                        except: pass
-
-class QueueItemWidget(ft.Container):
-    def __init__(self, app: VideoMixerApp, video_info, mode, global_res_str):
-        super().__init__()
-        self.app = app
-        self.video_id = video_info.get('id', '')
-        self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
-        self.title_text = video_info.get('title', 'Видео')
-        self.mode = mode
-        self.status = "waiting" 
-        self.use_yandex = app.settings.get("add_translation")
-
-        self.bgcolor = "#1C1C1E"
-        self.border_radius = 12
-        self.padding = 15
-
-        display_title = (self.title_text[:60] + '...') if len(self.title_text) > 60 else self.title_text
-        self.lbl_title = ft.Text(value=display_title, weight="bold", size=14, color="#FFFFFF")
-        
-        self.btn_remove = ft.Container(
-            content=ft.Icon("close", color="#EF5350", size=20),
-            on_click=self.remove_self,
-            width=35, height=35,
-            alignment=ft.alignment.center,
-            ink=True, border_radius=8
-        )
-        
-        self.combo_res = ft.Dropdown(
-            options=[ft.dropdown.Option(key="4K (2160p)", text="4K (2160p)")], 
-            value="4K (2160p)", 
-            width=140, height=40,
-            text_size=12,
-            content_padding=10,
-            border_color="transparent", bgcolor="#2C2C2E"
-        )
-        self.lbl_mp3 = ft.Text(value="🎵 Формат: MP3", color="#8A8A8A", size=13)
-        
-        self.btn_yandex = ft.Switch(
-            label="Яндекс.Перевод", 
-            value=self.use_yandex, 
-            active_color="#E040FB",
-            on_change=self.toggle_yandex
-        )
-
-        self.lbl_status = ft.Text(value="В очереди", color="#8A8A8A", size=12)
-        self.progress_bar = ft.ProgressBar(value=0, color="#2196F3", bgcolor="#2C2C2E", expand=True)
-        self.lbl_percent = ft.Text(value="0%", size=12, color="#B3B3B3", width=40, text_align="right")
-
-        self.controls_row = ft.Row(spacing=15)
-        self.setup_mode_ui(global_res_str)
-
-        self.content = ft.Column([
-            ft.Row([self.lbl_title, self.btn_remove], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Row([self.controls_row, self.lbl_status], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Row([self.progress_bar, self.lbl_percent])
-        ], spacing=8)
-
-    def setup_mode_ui(self, target_res=""):
-        self.controls_row.controls.clear()
-        
-        if self.mode == "Видео":
-            self.controls_row.controls.append(self.combo_res)
-            if self.app.settings.get("add_translation"):
-                self.btn_yandex.visible = True
-                self.controls_row.controls.append(self.btn_yandex)
-            else:
-                self.btn_yandex.visible = False
-                
-            if len(self.combo_res.options) == 1 and self.status == "waiting":
-                self.status = "fetching_formats"
-                self.combo_res.disabled = True
-                self.app.request_format_fetch(self)
-        else:
-            self.controls_row.controls.append(self.lbl_mp3)
-            if self.status == "fetching_formats":
-                self.status = "waiting"
-        
-        if target_res and self.page:
-            self.page.update()
-
-    def change_mode(self, new_mode):
-        if self.mode == new_mode: return
-        self.mode = new_mode
-        self.setup_mode_ui()
-        if self.page: self.page.update()
-
-    def set_available_resolutions(self, res_list, global_res_str):
-        self.combo_res.options = [ft.dropdown.Option(key=r, text=r) for r in res_list]
-        self.combo_res.disabled = False
-        
-        global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
-        selected = res_list[0] 
-        for r in res_list:
-            val = 2160 if "4K" in r else (int(r.split("p")[0]) if "p" in r else 0)
-            if val <= global_val:
-                selected = r
-                break 
-                
-        self.combo_res.value = selected
-        if self.status == "fetching_formats":
-            self.status = "waiting"
-        
-        if self.page: self.page.update()
-
-    def update_yandex_visibility(self, global_trans):
-        if self.mode == "Видео":
-            if global_trans:
-                if not self.btn_yandex.visible:
-                    self.btn_yandex.visible = True
-                    self.btn_yandex.value = True
-                    self.use_yandex = True
-                    if self.btn_yandex not in self.controls_row.controls:
-                        self.controls_row.controls.append(self.btn_yandex)
-            else:
-                self.btn_yandex.visible = False
-                self.use_yandex = False
-                if self.btn_yandex in self.controls_row.controls:
-                    self.controls_row.controls.remove(self.btn_yandex)
-            if self.page: self.page.update()
-
-    def toggle_yandex(self, e):
-        self.use_yandex = self.btn_yandex.value
-
-    def set_progress(self, percent):
-        self.progress_bar.value = percent / 100.0
-        self.lbl_percent.value = f"{int(percent)}%"
-        if self.page: self.page.update()
-
-    def set_status(self, text, color):
-        if text == "❌ Ошибка" or text == "✅ Готово" or text == "⏹ Остановлено":
-            self.status = "error" if "Ошибка" in text or "Остановлено" in text else "done"
-        self.lbl_status.value = text
-        self.lbl_status.color = color
-        if self.page: self.page.update()
-
-    def set_disabled(self, disabled):
-        self.btn_remove.disabled = disabled
-        if disabled:
-            self.combo_res.disabled = True
-            self.btn_yandex.disabled = True
-        else:
-            if self.mode == "Видео":
-                self.combo_res.disabled = False
-                self.btn_yandex.disabled = False
-        if self.page: self.page.update()
-
-    def remove_self(self, e):
-        if self.status in ["downloading", "processing"]:
-            self.app.show_snack("Дождитесь окончания или остановите очередь", "#FBC02D")
-            return
-        self.app.queue_list.controls.remove(self)
-        self.app.queue_items.remove(self)
-        self.app.update_queue_status()
-        self.page.update()
-
-def main(page: ft.Page):
-    try:
-        VideoMixerApp(page)
-    except Exception as e:
-        logging.critical(f"Сбой при отрисовке UI: {e}", exc_info=True)
-        raise
+        self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
+        self.after(0, lambda: self.toggle_ui("normal"))
 
 if __name__ == "__main__":
-    try:
-        ft.app(target=main)
-    except Exception as e:
-        logging.critical(f"Критическая ошибка ядра Flet: {e}", exc_info=True)
+    app = VideoApp()
+    app.mainloop()
