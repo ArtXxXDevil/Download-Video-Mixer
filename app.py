@@ -47,7 +47,7 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logging.info("="*40)
-logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: Removed FilePicker Overlay) ---")
+logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Native Tkinter Dialogs) ---")
 
 class SettingsManager:
     @staticmethod
@@ -117,10 +117,6 @@ class VideoMixerApp:
 
         self.format_fetch_queue = queue.Queue()
         
-        # Новый FilePicker (создаем экземпляр, но НЕ добавляем на страницу)
-        self.file_picker = ft.FilePicker(on_result=self.on_dir_selected)
-        self.page.overlay.append(self.file_picker)
-        
         self.setup_ui()
         
         threading.Thread(target=self.check_dependencies, daemon=True).start()
@@ -147,6 +143,22 @@ class VideoMixerApp:
                     try: os.remove(os.path.join(save_dir, file_name))
                     except: pass
 
+    # Универсальная функция для открытия диалогов (поддержка старого и нового Flet)
+    def open_dialog(self, dialog):
+        if hasattr(self.page, "open"):
+            self.page.open(dialog)
+        else:
+            self.page.dialog = dialog
+            dialog.open = True
+            self.page.update()
+
+    def close_dialog(self, dialog):
+        if hasattr(self.page, "close"):
+            self.page.close(dialog)
+        else:
+            dialog.open = False
+            self.page.update()
+
     def setup_ui(self):
         self.url_input = ft.TextField(
             hint_text="https://www.youtube.com/watch?v=...",
@@ -156,17 +168,23 @@ class VideoMixerApp:
             bgcolor="#1C1C1E",
             border_color="transparent",
             content_padding=15,
-            prefix_icon="link"
+            prefix=ft.Icon("link")
         )
         
         self.btn_add = ft.ElevatedButton(
-            "Добавить",
-            icon="add",
+            content=ft.Row([ft.Icon("add"), ft.Text(value="Добавить")], alignment="center", spacing=5),
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), bgcolor="#1976D2", color="#FFFFFF"),
             height=48,
             on_click=self.fetch_and_add
         )
-        self.btn_settings = ft.IconButton("settings", on_click=self.open_settings, icon_size=24)
+        
+        self.btn_settings = ft.Container(
+            content=ft.Icon("settings"),
+            on_click=self.open_settings,
+            padding=10,
+            ink=True,
+            border_radius=8
+        )
 
         top_row = ft.Row([self.btn_settings, self.url_input, self.btn_add], alignment="spaceBetween")
 
@@ -180,17 +198,21 @@ class VideoMixerApp:
             border_radius=8,
             filled=True,
             bgcolor="#1C1C1E",
-            border_color="transparent",
-            on_change=self.on_mode_change
+            border_color="transparent"
         )
+        # Динамическая привязка события (обход переименования on_change -> on_select во Flet 0.24)
+        if hasattr(self.mode_dropdown, "on_select"):
+            self.mode_dropdown.on_select = self.on_mode_change
+        else:
+            self.mode_dropdown.on_change = self.on_mode_change
         
         self.global_res_dropdown = ft.Dropdown(
             options=[
-                ft.dropdown.Option(key="4K (2160p)"),
-                ft.dropdown.Option(key="1080p FullHD"),
-                ft.dropdown.Option(key="720p HD"),
-                ft.dropdown.Option(key="480p SD"),
-                ft.dropdown.Option(key="360p SD"),
+                ft.dropdown.Option(key="4K (2160p)", text="4K (2160p)"),
+                ft.dropdown.Option(key="1080p FullHD", text="1080p FullHD"),
+                ft.dropdown.Option(key="720p HD", text="720p HD"),
+                ft.dropdown.Option(key="480p SD", text="480p SD"),
+                ft.dropdown.Option(key="360p SD", text="360p SD"),
             ],
             value="4K (2160p)",
             width=160,
@@ -217,8 +239,7 @@ class VideoMixerApp:
         )
         
         self.btn_start = ft.ElevatedButton(
-            "ЗАПУСТИТЬ ОЧЕРЕДЬ",
-            icon="play_arrow_rounded",
+            content=ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment="center", spacing=5),
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=8), 
                 bgcolor="#43A047", 
@@ -244,7 +265,13 @@ class VideoMixerApp:
 
     # --- UI ЛОГИКА ---
     def show_snack(self, message, color="#4CAF50"):
-        self.page.open(ft.SnackBar(content=ft.Text(value=message), bgcolor=color))
+        snack = ft.SnackBar(content=ft.Text(value=message), bgcolor=color)
+        if hasattr(self.page, "open"):
+            self.page.open(snack)
+        else:
+            self.page.snack_bar = snack
+            self.page.snack_bar.open = True
+            self.page.update()
 
     def update_status(self, text, color="#8A8A8A"):
         self.status_text.value = text
@@ -273,8 +300,8 @@ class VideoMixerApp:
         if self.queue_items:
             needs_change = any(item.mode != selected for item in self.queue_items)
             if needs_change:
-                def close_dlg(apply):
-                    self.page.close(self.dlg_mode)
+                def dialog_handler(apply):
+                    self.close_dialog(self.dlg_mode)
                     if apply:
                         for item in self.queue_items:
                             item.change_mode(selected)
@@ -283,11 +310,11 @@ class VideoMixerApp:
                     title=ft.Text(value="Смена режима"),
                     content=ft.Text(value=f"Перевести все видео в очереди в режим '{selected}'?"),
                     actions=[
-                        ft.TextButton(content=ft.Text(value="Нет"), on_click=lambda e: close_dlg(False)),
-                        ft.TextButton(content=ft.Text(value="Да, применить"), on_click=lambda e: close_dlg(True)),
+                        ft.TextButton(content=ft.Text(value="Нет"), on_click=lambda e: dialog_handler(False)),
+                        ft.TextButton(content=ft.Text(value="Да, применить"), on_click=lambda e: dialog_handler(True)),
                     ],
                 )
-                self.page.open(self.dlg_mode)
+                self.open_dialog(self.dlg_mode)
         else:
             self.page.update()
 
@@ -307,19 +334,35 @@ class VideoMixerApp:
             for item in self.queue_items:
                 item.update_yandex_visibility(self.settings["add_translation"])
             
-            self.page.close(self.dlg_settings)
+            self.close_dialog(self.dlg_settings)
 
         def pick_dir(e):
-            self.file_picker_caller = "settings"
-            self.settings_path_input = path_input
-            self.file_picker.get_directory_path("Выберите папку для сохранения")
+            def run_tkinter():
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                folder = filedialog.askdirectory(title="Выберите папку для сохранения")
+                root.destroy()
+                if folder:
+                    path_input.value = folder
+                    path_input.update()
+            
+            threading.Thread(target=run_tkinter, daemon=True).start()
+
+        btn_folder = ft.Container(
+            content=ft.Icon("folder_open"),
+            on_click=pick_dir,
+            padding=10, ink=True, border_radius=8
+        )
 
         content = ft.Column([
             switch_trans,
             ft.Text(value="Громкость оригинала:"), slider_vol_orig,
             ft.Text(value="Громкость перевода:"), slider_vol_trans,
             ft.Text(value="Папка для сохранения:"),
-            ft.Row([path_input, ft.IconButton("folder_open", on_click=pick_dir)])
+            ft.Row([path_input, btn_folder])
         ], width=400, height=350, spacing=5)
 
         self.dlg_settings = ft.AlertDialog(
@@ -327,21 +370,7 @@ class VideoMixerApp:
             content=content,
             actions=[ft.ElevatedButton(content=ft.Text(value="Сохранить"), on_click=save_and_close)]
         )
-        self.page.open(self.dlg_settings)
-
-    def on_dir_selected(self, e: ft.FilePickerResultEvent):
-        try:
-            if e.path:
-                logging.info(f"Выбрана папка: {e.path}")
-                if getattr(self, "file_picker_caller", "") == "settings":
-                    self.settings_path_input.value = e.path
-                    self.settings_path_input.update()
-                elif getattr(self, "file_picker_caller", "") == "start_queue":
-                    self.settings["save_path"] = e.path
-                    SettingsManager.save(self.settings)
-                    self.start_queue(None)
-        except Exception as ex:
-            logging.error(f"Ошибка при выборе папки: {ex}")
+        self.open_dialog(self.dlg_settings)
 
     def check_dependencies(self):
         ctx = ssl.create_default_context()
@@ -504,7 +533,7 @@ class VideoMixerApp:
 
         def confirm(e):
             selected_vids = [v for c, v in checkboxes if c.value]
-            self.page.close(self.dlg_playlist)
+            self.close_dialog(self.dlg_playlist)
             self.add_items_to_queue(selected_vids)
 
         self.dlg_playlist = ft.AlertDialog(
@@ -514,11 +543,11 @@ class VideoMixerApp:
                 width=500
             ),
             actions=[
-                ft.TextButton(content=ft.Text(value="Отмена"), on_click=lambda e: self.page.close(self.dlg_playlist)),
+                ft.TextButton(content=ft.Text(value="Отмена"), on_click=lambda e: self.close_dialog(self.dlg_playlist)),
                 ft.ElevatedButton(content=ft.Text(value="Добавить"), on_click=confirm, bgcolor="#43A047", color="#FFFFFF")
             ]
         )
-        self.page.open(self.dlg_playlist)
+        self.open_dialog(self.dlg_playlist)
 
     def add_items_to_queue(self, videos_list):
         mode = self.mode_dropdown.value
@@ -559,8 +588,20 @@ class VideoMixerApp:
             return
             
         if not self.settings["save_path"]:
-            self.file_picker_caller = "start_queue"
-            self.file_picker.get_directory_path("Выберите папку для сохранения")
+            def run_tkinter_start():
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                folder = filedialog.askdirectory(title="Выберите папку для сохранения")
+                root.destroy()
+                if folder:
+                    self.settings["save_path"] = folder
+                    SettingsManager.save(self.settings)
+                    self.start_queue(None)
+            
+            threading.Thread(target=run_tkinter_start, daemon=True).start()
             return
 
         if self.is_downloading:
@@ -572,7 +613,7 @@ class VideoMixerApp:
         self.stop_requested = False
         self.is_downloading = True
         
-        self.btn_start.content = ft.Row([ft.Icon("stop_rounded"), ft.Text("ОСТАНОВИТЬ")], alignment="center", spacing=5)
+        self.btn_start.content = ft.Row([ft.Icon("stop_rounded"), ft.Text(value="ОСТАНОВИТЬ")], alignment="center", spacing=5)
         self.btn_start.style.bgcolor = "#D32F2F"
         self.toggle_ui(True)
         
@@ -593,7 +634,7 @@ class VideoMixerApp:
             logging.error(f"Глобальная ошибка очереди: {e}")
         finally:
             self.is_downloading = False
-            self.btn_start.content = ft.Row([ft.Icon("play_arrow_rounded"), ft.Text("ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment="center", spacing=5)
+            self.btn_start.content = ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment="center", spacing=5)
             self.btn_start.style.bgcolor = "#43A047"
             self.btn_start.disabled = False
             self.toggle_ui(False)
@@ -732,10 +773,17 @@ class QueueItemWidget(ft.Container):
 
         display_title = (self.title_text[:60] + '...') if len(self.title_text) > 60 else self.title_text
         self.lbl_title = ft.Text(value=display_title, weight="bold", size=14, color="#FFFFFF")
-        self.btn_remove = ft.IconButton("close", icon_color="#EF5350", on_click=self.remove_self, width=35, height=35)
+        
+        self.btn_remove = ft.Container(
+            content=ft.Icon("close", color="#EF5350", size=20),
+            on_click=self.remove_self,
+            width=35, height=35,
+            alignment=ft.alignment.center,
+            ink=True, border_radius=8
+        )
         
         self.combo_res = ft.Dropdown(
-            options=[ft.dropdown.Option(key="4K (2160p)")], 
+            options=[ft.dropdown.Option(key="4K (2160p)", text="4K (2160p)")], 
             value="4K (2160p)", 
             width=140, height=40,
             text_size=12,
@@ -794,7 +842,7 @@ class QueueItemWidget(ft.Container):
         if self.page: self.page.update()
 
     def set_available_resolutions(self, res_list, global_res_str):
-        self.combo_res.options = [ft.dropdown.Option(key=r) for r in res_list]
+        self.combo_res.options = [ft.dropdown.Option(key=r, text=r) for r in res_list]
         self.combo_res.disabled = False
         
         global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
