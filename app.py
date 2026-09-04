@@ -47,7 +47,7 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logging.info("="*40)
-logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Positional Args) ---")
+logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Bugfix: Removed SegmentedButton) ---")
 
 class SettingsManager:
     @staticmethod
@@ -148,7 +148,6 @@ class VideoMixerApp:
         self.dir_picker.on_result = self.on_dir_selected
         self.page.overlay.append(self.dir_picker)
 
-        # TextField использует kwargs, с ним проблем нет
         self.url_input = ft.TextField(
             hint_text="https://www.youtube.com/watch?v=...",
             expand=True,
@@ -160,7 +159,6 @@ class VideoMixerApp:
             prefix_icon="link"
         )
         
-        # Передаем позиционно: текст и иконку
         self.btn_add = ft.ElevatedButton(
             "Добавить",
             icon="add",
@@ -172,23 +170,28 @@ class VideoMixerApp:
 
         top_row = ft.Row([self.btn_settings, self.url_input, self.btn_add], alignment="spaceBetween")
 
-        self.mode_seg = ft.SegmentedButton(
-            selected={"Видео"},
-            allow_multiple_selection=False,
-            segments=[
-                ft.Segment(value="Видео", label=ft.Text("Видео", weight="bold")),
-                ft.Segment(value="Только Аудио (MP3)", label=ft.Text("Аудио (MP3)", weight="bold")),
+        # --- ИСПРАВЛЕНИЕ: Заменили забагованный SegmentedButton на безопасный Dropdown ---
+        self.mode_dropdown = ft.Dropdown(
+            options=[
+                ft.dropdown.Option(key="Видео", text="Режим: Видео"),
+                ft.dropdown.Option(key="Только Аудио (MP3)", text="Режим: Аудио (MP3)"),
             ],
+            value="Видео",
+            width=220,
+            border_radius=8,
+            filled=True,
+            bgcolor="#1C1C1E",
+            border_color="transparent",
             on_change=self.on_mode_change
         )
         
         self.global_res_dropdown = ft.Dropdown(
             options=[
-                ft.dropdown.Option("4K (2160p)"),
-                ft.dropdown.Option("1080p FullHD"),
-                ft.dropdown.Option("720p HD"),
-                ft.dropdown.Option("480p SD"),
-                ft.dropdown.Option("360p SD"),
+                ft.dropdown.Option(key="4K (2160p)"),
+                ft.dropdown.Option(key="1080p FullHD"),
+                ft.dropdown.Option(key="720p HD"),
+                ft.dropdown.Option(key="480p SD"),
+                ft.dropdown.Option(key="360p SD"),
             ],
             value="4K (2160p)",
             width=160,
@@ -200,16 +203,19 @@ class VideoMixerApp:
 
         controls_row = ft.Container(
             content=ft.Row([
-                self.mode_seg, 
-                ft.Row([ft.Text("Макс. качество:", color="#B3B3B3"), self.global_res_dropdown])
+                self.mode_dropdown, 
+                ft.Row([ft.Text(value="Макс. качество:", color="#B3B3B3"), self.global_res_dropdown])
             ], alignment="spaceBetween"),
             padding=10
         )
 
         self.queue_list = ft.ListView(expand=True, spacing=10, auto_scroll=False)
 
-        self.status_text = ft.Text("Ожидание ссылок...", color="#8A8A8A", size=13)
-        self.btn_clear = ft.TextButton("Очистить очередь", icon="delete_outline", on_click=self.clear_queue)
+        self.status_text = ft.Text(value="Ожидание ссылок...", color="#8A8A8A", size=13)
+        self.btn_clear = ft.TextButton(
+            content=ft.Row([ft.Icon(name="delete_outline"), ft.Text(value="Очистить очередь")], alignment="center", spacing=5), 
+            on_click=self.clear_queue
+        )
         
         self.btn_start = ft.ElevatedButton(
             "ЗАПУСТИТЬ ОЧЕРЕДЬ",
@@ -237,8 +243,9 @@ class VideoMixerApp:
             bottom_row
         )
 
+    # --- UI ЛОГИКА ---
     def show_snack(self, message, color="#4CAF50"):
-        self.page.open(ft.SnackBar(content=ft.Text(message), bgcolor=color))
+        self.page.open(ft.SnackBar(content=ft.Text(value=message), bgcolor=color))
 
     def update_status(self, text, color="#8A8A8A"):
         self.status_text.value = text
@@ -249,10 +256,10 @@ class VideoMixerApp:
         self.url_input.disabled = disabled
         self.btn_add.disabled = disabled
         self.btn_settings.disabled = disabled
-        self.mode_seg.disabled = disabled
+        self.mode_dropdown.disabled = disabled
         self.btn_clear.disabled = disabled
         self.global_res_dropdown.disabled = disabled if not disabled else True
-        if not disabled and "Видео" not in self.mode_seg.selected:
+        if not disabled and self.mode_dropdown.value != "Видео":
             self.global_res_dropdown.disabled = True
             
         for item in self.queue_items:
@@ -260,8 +267,9 @@ class VideoMixerApp:
         self.page.update()
 
     def on_mode_change(self, e):
-        selected = list(self.mode_seg.selected)[0]
+        selected = self.mode_dropdown.value
         self.global_res_dropdown.disabled = (selected != "Видео")
+        logging.info(f"Глобальный режим изменен на: {selected}")
         
         if self.queue_items:
             needs_change = any(item.mode != selected for item in self.queue_items)
@@ -273,11 +281,11 @@ class VideoMixerApp:
                             item.change_mode(selected)
 
                 self.dlg_mode = ft.AlertDialog(
-                    title=ft.Text("Смена режима"),
-                    content=ft.Text(f"Перевести все видео в очереди в режим '{selected}'?"),
+                    title=ft.Text(value="Смена режима"),
+                    content=ft.Text(value=f"Перевести все видео в очереди в режим '{selected}'?"),
                     actions=[
-                        ft.TextButton("Нет", on_click=lambda e: close_dlg(False)),
-                        ft.TextButton("Да, применить", on_click=lambda e: close_dlg(True)),
+                        ft.TextButton(content=ft.Text(value="Нет"), on_click=lambda e: close_dlg(False)),
+                        ft.TextButton(content=ft.Text(value="Да, применить"), on_click=lambda e: close_dlg(True)),
                     ],
                 )
                 self.page.open(self.dlg_mode)
@@ -304,20 +312,21 @@ class VideoMixerApp:
 
         def pick_dir(e):
             self.dir_picker_caller = "settings"
+            self.settings_path_input = path_input
             self.dir_picker.get_directory_path(dialog_title="Выберите папку для сохранения")
 
         content = ft.Column([
             switch_trans,
-            ft.Text("Громкость оригинала:"), slider_vol_orig,
-            ft.Text("Громкость перевода:"), slider_vol_trans,
-            ft.Text("Папка для сохранения:"),
-            ft.Row([path_input, ft.IconButton("folder_open", on_click=pick_dir)])
+            ft.Text(value="Громкость оригинала:"), slider_vol_orig,
+            ft.Text(value="Громкость перевода:"), slider_vol_trans,
+            ft.Text(value="Папка для сохранения:"),
+            ft.Row([path_input, ft.IconButton(icon="folder_open", on_click=pick_dir)])
         ], width=400, height=350, spacing=5)
 
         self.dlg_settings = ft.AlertDialog(
-            title=ft.Text("Настройки", size=20, weight="bold"),
+            title=ft.Text(value="Настройки", size=20, weight="bold"),
             content=content,
-            actions=[ft.ElevatedButton("Сохранить", on_click=save_and_close)]
+            actions=[ft.ElevatedButton(content=ft.Text(value="Сохранить"), on_click=save_and_close)]
         )
         self.page.open(self.dlg_settings)
 
@@ -326,8 +335,8 @@ class VideoMixerApp:
             if e.path:
                 logging.info(f"Выбрана папка: {e.path}")
                 if getattr(self, "dir_picker_caller", "") == "settings":
-                    # Настройки
-                    pass # Значение обновится через pick_dir
+                    self.settings_path_input.value = e.path
+                    self.settings_path_input.update()
                 elif getattr(self, "dir_picker_caller", "") == "start_queue":
                     self.settings["save_path"] = e.path
                     SettingsManager.save(self.settings)
@@ -437,7 +446,6 @@ class VideoMixerApp:
         if len(url) < 10: return
         
         self.btn_add.disabled = True
-        self.btn_add.text = "Поиск..."
         self.page.update()
         threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
 
@@ -473,13 +481,12 @@ class VideoMixerApp:
             self.update_status("Ошибка анализа", "#F44336")
         finally:
             self.btn_add.disabled = False
-            self.btn_add.text = "Добавить"
             self.url_input.value = ""
             self.page.update()
 
     def show_playlist_dialog(self, videos):
         total = len(videos)
-        lbl_count = ft.Text(f"Выбрано: {total} из {total}", color="#B3B3B3")
+        lbl_count = ft.Text(value=f"Выбрано: {total} из {total}", color="#B3B3B3")
         
         checkboxes = []
         def update_count(e):
@@ -502,20 +509,20 @@ class VideoMixerApp:
             self.add_items_to_queue(selected_vids)
 
         self.dlg_playlist = ft.AlertDialog(
-            title=ft.Text("Найден Плейлист", weight="bold"),
+            title=ft.Text(value="Найден Плейлист", weight="bold"),
             content=ft.Container(
                 content=ft.Column([lbl_count, ft.Divider(color="#2C2C2E"), scroll_col], tight=True),
                 width=500
             ),
             actions=[
-                ft.TextButton("Отмена", on_click=lambda e: self.page.close(self.dlg_playlist)),
-                ft.ElevatedButton("Добавить", on_click=confirm, bgcolor="#43A047", color="#FFFFFF")
+                ft.TextButton(content=ft.Text(value="Отмена"), on_click=lambda e: self.page.close(self.dlg_playlist)),
+                ft.ElevatedButton(content=ft.Text(value="Добавить"), on_click=confirm, bgcolor="#43A047", color="#FFFFFF")
             ]
         )
         self.page.open(self.dlg_playlist)
 
     def add_items_to_queue(self, videos_list):
-        mode = list(self.mode_seg.selected)[0]
+        mode = self.mode_dropdown.value
         global_res = self.global_res_dropdown.value
         
         existing_ids = set(item.video_id for item in self.queue_items)
@@ -565,8 +572,9 @@ class VideoMixerApp:
 
         self.stop_requested = False
         self.is_downloading = True
-        self.btn_start.text = "ОСТАНОВИТЬ"
-        self.btn_start.icon = "stop_rounded"
+        
+        # Обновляем кнопку без kwargs (позиционными аргументами)
+        self.btn_start.content = ft.Row([ft.Icon("stop_rounded"), ft.Text("ОСТАНОВИТЬ")], alignment="center", spacing=5)
         self.btn_start.style.bgcolor = "#D32F2F"
         self.toggle_ui(True)
         
@@ -587,8 +595,7 @@ class VideoMixerApp:
             logging.error(f"Глобальная ошибка очереди: {e}")
         finally:
             self.is_downloading = False
-            self.btn_start.text = "ЗАПУСТИТЬ ОЧЕРЕДЬ"
-            self.btn_start.icon = "play_arrow_rounded"
+            self.btn_start.content = ft.Row([ft.Icon("play_arrow_rounded"), ft.Text("ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment="center", spacing=5)
             self.btn_start.style.bgcolor = "#43A047"
             self.btn_start.disabled = False
             self.toggle_ui(False)
@@ -726,18 +733,18 @@ class QueueItemWidget(ft.Container):
         self.padding = 15
 
         display_title = (self.title_text[:60] + '...') if len(self.title_text) > 60 else self.title_text
-        self.lbl_title = ft.Text(display_title, weight="bold", size=14, color="#FFFFFF")
+        self.lbl_title = ft.Text(value=display_title, weight="bold", size=14, color="#FFFFFF")
         self.btn_remove = ft.IconButton("close", icon_color="#EF5350", on_click=self.remove_self, width=35, height=35)
         
         self.combo_res = ft.Dropdown(
-            options=[ft.dropdown.Option("4K (2160p)")], 
+            options=[ft.dropdown.Option(key="4K (2160p)")], 
             value="4K (2160p)", 
             width=140, height=40,
             text_size=12,
             content_padding=10,
             border_color="transparent", bgcolor="#2C2C2E"
         )
-        self.lbl_mp3 = ft.Text("🎵 Формат: MP3", color="#8A8A8A", size=13)
+        self.lbl_mp3 = ft.Text(value="🎵 Формат: MP3", color="#8A8A8A", size=13)
         
         self.btn_yandex = ft.Switch(
             label="Яндекс.Перевод", 
@@ -746,9 +753,9 @@ class QueueItemWidget(ft.Container):
             on_change=self.toggle_yandex
         )
 
-        self.lbl_status = ft.Text("В очереди", color="#8A8A8A", size=12)
+        self.lbl_status = ft.Text(value="В очереди", color="#8A8A8A", size=12)
         self.progress_bar = ft.ProgressBar(value=0, color="#2196F3", bgcolor="#2C2C2E", expand=True)
-        self.lbl_percent = ft.Text("0%", size=12, color="#B3B3B3", width=40, text_align="right")
+        self.lbl_percent = ft.Text(value="0%", size=12, color="#B3B3B3", width=40, text_align="right")
 
         self.controls_row = ft.Row(spacing=15)
         self.setup_mode_ui(global_res_str)
@@ -789,7 +796,7 @@ class QueueItemWidget(ft.Container):
         if self.page: self.page.update()
 
     def set_available_resolutions(self, res_list, global_res_str):
-        self.combo_res.options = [ft.dropdown.Option(r) for r in res_list]
+        self.combo_res.options = [ft.dropdown.Option(key=r) for r in res_list]
         self.combo_res.disabled = False
         
         global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
