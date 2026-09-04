@@ -47,7 +47,7 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logging.info("="*40)
-logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Native Tkinter Dialogs) ---")
+logging.info("--- ЗАПУСК ПРИЛОЖЕНИЯ v4.0 (Flet Strict Enums) ---")
 
 class SettingsManager:
     @staticmethod
@@ -80,7 +80,7 @@ class VideoMixerApp:
     def __init__(self, page: ft.Page):
         self.page = page
         self.page.title = "YTD Mixer v4.0"
-        self.page.theme_mode = "dark"
+        self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = "#0E0E12" 
         self.page.window.width = 700
         self.page.window.height = 750
@@ -143,7 +143,6 @@ class VideoMixerApp:
                     try: os.remove(os.path.join(save_dir, file_name))
                     except: pass
 
-    # Универсальная функция для открытия диалогов (поддержка старого и нового Flet)
     def open_dialog(self, dialog):
         if hasattr(self.page, "open"):
             self.page.open(dialog)
@@ -168,12 +167,13 @@ class VideoMixerApp:
             bgcolor="#1C1C1E",
             border_color="transparent",
             content_padding=15,
-            prefix=ft.Icon("link")
+            prefix_icon="link"
         )
         
+        # Нативные стили кнопок (без ButtonStyle)
         self.btn_add = ft.ElevatedButton(
-            content=ft.Row([ft.Icon("add"), ft.Text(value="Добавить")], alignment="center", spacing=5),
-            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), bgcolor="#1976D2", color="#FFFFFF"),
+            content=ft.Row([ft.Icon("add"), ft.Text(value="Добавить")], alignment=ft.MainAxisAlignment.CENTER, spacing=5),
+            bgcolor="#1976D2", color="#FFFFFF",
             height=48,
             on_click=self.fetch_and_add
         )
@@ -186,7 +186,10 @@ class VideoMixerApp:
             border_radius=8
         )
 
-        top_row = ft.Row([self.btn_settings, self.url_input, self.btn_add], alignment="spaceBetween")
+        top_row = ft.Row(
+            [self.btn_settings, self.url_input, self.btn_add], 
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+        )
 
         self.mode_dropdown = ft.Dropdown(
             options=[
@@ -200,7 +203,6 @@ class VideoMixerApp:
             bgcolor="#1C1C1E",
             border_color="transparent"
         )
-        # Динамическая привязка события (обход переименования on_change -> on_select во Flet 0.24)
         if hasattr(self.mode_dropdown, "on_select"):
             self.mode_dropdown.on_select = self.on_mode_change
         else:
@@ -226,7 +228,7 @@ class VideoMixerApp:
             content=ft.Row([
                 self.mode_dropdown, 
                 ft.Row([ft.Text(value="Макс. качество:", color="#B3B3B3"), self.global_res_dropdown])
-            ], alignment="spaceBetween"),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=10
         )
 
@@ -234,25 +236,20 @@ class VideoMixerApp:
 
         self.status_text = ft.Text(value="Ожидание ссылок...", color="#8A8A8A", size=13)
         self.btn_clear = ft.TextButton(
-            content=ft.Row([ft.Icon("delete_outline"), ft.Text(value="Очистить очередь")], alignment="center", spacing=5), 
+            content=ft.Row([ft.Icon("delete_outline"), ft.Text(value="Очистить очередь")], alignment=ft.MainAxisAlignment.CENTER, spacing=5), 
             on_click=self.clear_queue
         )
         
         self.btn_start = ft.ElevatedButton(
-            content=ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment="center", spacing=5),
-            style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=8), 
-                bgcolor="#43A047", 
-                color="#FFFFFF",
-                padding=20
-            ),
+            content=ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment=ft.MainAxisAlignment.CENTER, spacing=5),
+            bgcolor="#43A047", color="#FFFFFF",
             on_click=self.start_queue
         )
 
         bottom_row = ft.Row([
             ft.Column([self.btn_clear, self.status_text], spacing=2),
             self.btn_start
-        ], alignment="spaceBetween")
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
         self.page.add(
             top_row,
@@ -613,8 +610,8 @@ class VideoMixerApp:
         self.stop_requested = False
         self.is_downloading = True
         
-        self.btn_start.content = ft.Row([ft.Icon("stop_rounded"), ft.Text(value="ОСТАНОВИТЬ")], alignment="center", spacing=5)
-        self.btn_start.style.bgcolor = "#D32F2F"
+        self.btn_start.content = ft.Row([ft.Icon("stop_rounded"), ft.Text(value="ОСТАНОВИТЬ")], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
+        self.btn_start.bgcolor = "#D32F2F"
         self.toggle_ui(True)
         
         threading.Thread(target=self._process_queue_thread, daemon=True).start()
@@ -634,8 +631,8 @@ class VideoMixerApp:
             logging.error(f"Глобальная ошибка очереди: {e}")
         finally:
             self.is_downloading = False
-            self.btn_start.content = ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment="center", spacing=5)
-            self.btn_start.style.bgcolor = "#43A047"
+            self.btn_start.content = ft.Row([ft.Icon("play_arrow_rounded"), ft.Text(value="ЗАПУСТИТЬ ОЧЕРЕДЬ")], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
+            self.btn_start.bgcolor = "#43A047"
             self.btn_start.disabled = False
             self.toggle_ui(False)
             self.update_queue_status()
@@ -807,8 +804,8 @@ class QueueItemWidget(ft.Container):
         self.setup_mode_ui(global_res_str)
 
         self.content = ft.Column([
-            ft.Row([self.lbl_title, self.btn_remove], alignment="spaceBetween"),
-            ft.Row([self.controls_row, self.lbl_status], alignment="spaceBetween"),
+            ft.Row([self.lbl_title, self.btn_remove], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([self.controls_row, self.lbl_status], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Row([self.progress_bar, self.lbl_percent])
         ], spacing=8)
 
