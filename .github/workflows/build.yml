@@ -1,66 +1,69 @@
 name: Build Download Video Mixer
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
 
-# Убираем системное предупреждение GitHub про Node.js
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+permissions:
+  contents: read
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest]
-    
-    runs-on: ${{ matrix.os }}
-
+  build-windows:
+    name: Windows x64
+    runs-on: windows-latest
     steps:
-    - name: Копирование кода
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Установка Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Установка библиотек
-      run: |
-        python -m pip install --upgrade pip
-        pip install customtkinter yt-dlp pyinstaller
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet pyinstaller
 
-    # --- СБОРКА ДЛЯ WINDOWS ---
-    - name: Компиляция для Windows
-      if: matrix.os == 'windows-latest'
-      run: pyinstaller --noconsole --onefile --icon=icon.ico --add-data "icon.ico;." --name "Download Video Mixer" app.py
+      - name: Build Windows app
+        run: |
+          flet pack app.py --icon icon.ico --name "Download Video Mixer"
 
-    - name: Загрузка готового EXE (Windows)
-      if: matrix.os == 'windows-latest'
-      uses: actions/upload-artifact@v4
-      with:
-        name: Download-Video-Mixer-Windows
-        path: dist/Download Video Mixer.exe
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Download-Video-Mixer-Windows-x64
+          path: "dist/Download Video Mixer.exe"
+          if-no-files-found: error
 
-    # --- СБОРКА ДЛЯ MACOS ---
-    - name: Компиляция для macOS
-      if: matrix.os == 'macos-latest'
-      run: pyinstaller --noconsole --onefile --windowed --icon=icon.icns --add-data "icon.icns:." --name "Download Video Mixer" app.py
+  build-macos:
+    name: macOS (Universal)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Создание DMG образа (macOS)
-      if: matrix.os == 'macos-latest'
-      run: |
-        # Создаем временную папку для формирования диска
-        mkdir -p dist/dmg_folder
-        # Перемещаем туда наше скомпилированное приложение
-        mv "dist/Download Video Mixer.app" dist/dmg_folder/
-        # Создаем ярлык папки Applications (Программы)
-        ln -s /Applications dist/dmg_folder/Applications
-        # Упаковываем это всё в DMG образ
-        hdiutil create -volname "Download Video Mixer" -srcfolder dist/dmg_folder -ov -format UDZO "dist/Download Video Mixer.dmg"
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Загрузка готового DMG (macOS)
-      if: matrix.os == 'macos-latest'
-      uses: actions/upload-artifact@v4
-      with:
-        name: Download-Video-Mixer-macOS
-        path: dist/Download Video Mixer.dmg
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet pyinstaller
+
+      - name: Build macOS app
+        run: |
+          flet pack app.py --icon icon.icns --name "Download Video Mixer"
+
+      - name: Create ZIP archive (macOS)
+        run: |
+          cd dist
+          zip -r "Download Video Mixer-macOS.zip" "Download Video Mixer.app"
+
+      - name: Upload macOS ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Download-Video-Mixer-macOS
+          path: "dist/Download Video Mixer-macOS.zip"
+          if-no-files-found: error
