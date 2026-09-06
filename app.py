@@ -30,6 +30,7 @@ class SettingsManager:
             "add_translation": False,
             "show_manual_audio": False,
             "voice_mode": "standard", 
+            "yandex_token": "",
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": ""
@@ -53,8 +54,8 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title("Настройки")
         
-        window_width = 450
-        window_height = 430
+        window_width = 460
+        window_height = 500
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -83,7 +84,14 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.voice_var = ctk.StringVar(value="Живые голоса" if self.settings.get("voice_mode") == "lively" else "Обычные голоса")
         self.voice_seg = ctk.CTkSegmentedButton(self, values=["Обычные голоса", "Живые голоса"], variable=self.voice_var)
-        self.voice_seg.pack(pady=(5, 10))
+        self.voice_seg.pack(pady=(5, 5))
+        
+        token_frame = ctk.CTkFrame(self, fg_color="transparent")
+        token_frame.pack(fill="x", padx=40, pady=2)
+        ctk.CTkLabel(token_frame, text="Yandex API Token (нужен для Живых голосов):", font=("Arial", 11)).pack(anchor="w")
+        self.token_entry = ctk.CTkEntry(token_frame, width=370, placeholder_text="Вставьте токен Yandex OAuth...")
+        self.token_entry.insert(0, self.settings.get("yandex_token", ""))
+        self.token_entry.pack(fill="x", pady=(2, 5))
 
         ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(5, 5))
 
@@ -129,6 +137,7 @@ class SettingsWindow(ctk.CTkToplevel):
             "add_translation": self.trans_var.get(),
             "show_manual_audio": self.manual_var.get(),
             "voice_mode": "lively" if self.voice_var.get() == "Живые голоса" else "standard",
+            "yandex_token": self.token_entry.get().strip(),
             "vol_original": int(self.slider_vol1.get()),
             "vol_translate": int(self.slider_vol2.get()),
             "save_path": self.path_entry.get()
@@ -704,9 +713,10 @@ class VideoApp(ctk.CTk):
                     
                     if self.settings.get("voice_mode") == "lively":
                         cmd_vot.append("--lively-voice")
-                        
-                    # Добавляем стандартный User-Agent, чтобы обойти базовые защиты Яндекса
-                    cmd_vot.append("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+                        # Добавляем токен, если он указан в настройках
+                        token = self.settings.get("yandex_token", "").strip()
+                        if token:
+                            cmd_vot.extend(["--api-token", token])
                         
                     kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                     
