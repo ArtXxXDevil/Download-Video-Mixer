@@ -28,6 +28,7 @@ class SettingsManager:
     def load():
         defaults = {
             "add_translation": False,
+            "voice_mode": "lively", # "standard" или "lively"
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": ""
@@ -52,7 +53,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 400
-        window_height = 360
+        window_height = 400
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -74,6 +75,11 @@ class SettingsWindow(ctk.CTkToplevel):
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
         self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.toggle_sliders)
         self.check_trans.pack(pady=5)
+
+        # Выбор режима голоса
+        self.voice_var = ctk.StringVar(value="Живые голоса" if self.settings.get("voice_mode") == "lively" else "Обычные голоса")
+        self.voice_seg = ctk.CTkSegmentedButton(self, values=["Обычные голоса", "Живые голоса"], variable=self.voice_var)
+        self.voice_seg.pack(pady=(0, 10))
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
         self.lbl_vol1.pack()
@@ -115,6 +121,7 @@ class SettingsWindow(ctk.CTkToplevel):
     def on_close(self):
         new_settings = {
             "add_translation": self.trans_var.get(),
+            "voice_mode": "lively" if self.voice_var.get() == "Живые голоса" else "standard",
             "vol_original": int(self.slider_vol1.get()),
             "vol_translate": int(self.slider_vol2.get()),
             "save_path": self.path_entry.get()
@@ -189,6 +196,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.status = "waiting" 
         
         self.use_yandex_translation = False
+        self.manual_audio_path = None
         
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
         top_frame.pack(fill="x", padx=5, pady=2)
@@ -200,8 +208,8 @@ class QueueItemWidget(ctk.CTkFrame):
         self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
         self.btn_remove.pack(side="right")
         
-        # Кнопка перезапуска (исправленная)
-        self.btn_restart = ctk.CTkButton(top_frame, text="⟳", font=("Arial", 18, "bold"), width=30, height=24, fg_color="transparent", text_color="#1F6AA5", hover_color="#ccccff", command=self.restart_self)
+        # Исправленная кнопка перезапуска
+        self.btn_restart = ctk.CTkButton(top_frame, text="↻", font=("Arial", 18, "bold"), width=30, height=24, fg_color="transparent", text_color="#1F6AA5", hover_color="#ccccff", command=self.restart_self)
         self.btn_restart.pack(side="right", padx=(0, 5))
 
         self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -212,6 +220,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         
         self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Перевод [ВКЛ]", height=24, width=130, command=self.toggle_yandex)
+        self.btn_manual = ctk.CTkButton(self.mid_frame, text="📂 Свой аудио-файл", height=24, width=140, fg_color="gray", hover_color="#555555", command=self.select_manual_audio)
 
         self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
         self.lbl_status.pack(side="right")
@@ -228,10 +237,28 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
         self.lbl_percent.pack(side="right")
 
+    def select_manual_audio(self):
+        if self.app.is_downloading: return
+        
+        if self.manual_audio_path:
+            # Сброс ручного файла
+            self.manual_audio_path = None
+            self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
+            return
+            
+        path = filedialog.askopenfilename(title="Выберите аудио", filetypes=[("Audio Files", "*.mp3 *.m4a *.wav")])
+        if path:
+            self.manual_audio_path = os.path.abspath(path)
+            self.btn_manual.configure(text="📂 Выбран (сбросить)", fg_color="green", hover_color="darkgreen")
+            # Автоматически отключаем яндекс-перевод, чтобы избежать конфликтов
+            self.use_yandex_translation = False
+            self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
+
     def setup_mode_ui(self):
         self.combo_res.pack_forget()
         self.lbl_mp3.pack_forget()
         self.btn_yandex.pack_forget()
+        self.btn_manual.pack_forget()
         
         if self.mode == "Видео":
             self.combo_res.pack(side="left", padx=(0, 10))
@@ -273,28 +300,36 @@ class QueueItemWidget(ctk.CTkFrame):
     def update_yandex_visibility(self, global_trans):
         if self.mode != "Видео":
             self.btn_yandex.pack_forget()
+            self.btn_manual.pack_forget()
             return
             
+        self.btn_yandex.pack_forget()
+        self.btn_manual.pack_forget()
+            
         if global_trans:
-            if not self.btn_yandex.winfo_ismapped():
-                self.btn_yandex.pack(side="left", padx=5)
-                self.use_yandex_translation = True
-                self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+            self.btn_yandex.pack(side="left", padx=5)
+            self.use_yandex_translation = True
+            self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+            # Сбрасываем ручной аудио-файл
+            self.manual_audio_path = None
+            self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
         else:
-            self.btn_yandex.pack_forget()
             self.use_yandex_translation = False
+            self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
+            
+        # Ручная дорожка доступна всегда, даже если Яндекс отключен глобально
+        self.btn_manual.pack(side="left", padx=5)
 
     def toggle_yandex(self):
         if self.app.is_downloading: return
         self.use_yandex_translation = not self.use_yandex_translation
         if self.use_yandex_translation:
             self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+            # Если включили Яндекс, сбрасываем ручной файл
+            self.manual_audio_path = None
+            self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
         else:
             self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
-
-    def update_progress(self, percent):
-        self.progress.set(percent / 100.0)
-        self.lbl_percent.configure(text=f"{int(percent)}%")
 
     def set_progress_mode(self, mode="determinate"):
         if not self.winfo_exists(): return
@@ -304,6 +339,10 @@ class QueueItemWidget(ctk.CTkFrame):
             self.lbl_percent.configure(text="~")
         else:
             self.progress.stop()
+
+    def update_progress(self, percent):
+        self.progress.set(percent / 100.0)
+        self.lbl_percent.configure(text=f"{int(percent)}%")
         
     def set_status(self, text, color="black"):
         self.lbl_status.configure(text=text, text_color=color)
@@ -323,7 +362,7 @@ class QueueItemWidget(ctk.CTkFrame):
             return
         
         self.status = "waiting"
-        self.set_progress_mode("determinate") # Выключаем анимацию
+        self.set_progress_mode("determinate")
         self.set_status("В очереди", "gray")
         self.update_progress(0)
         self.app.update_queue_status()
@@ -332,7 +371,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.5 (VOT-CLI Core Fixed)")
+        self.title("Download Video Mixer v3.6 (Manual Track & Live Voices)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -352,7 +391,7 @@ class VideoApp(ctk.CTk):
                 self.icon_path = icon_path
                 self.iconbitmap(icon_path)
         
-        self.geometry("650x600")
+        self.geometry("680x600")
         self.settings = SettingsManager.load()
         
         if self.os_name == "Windows":
@@ -418,7 +457,7 @@ class VideoApp(ctk.CTk):
         self.res_combobox.pack(side="left", padx=5)
         self.res_combobox.set("4K (2160p)")
 
-        self.queue_frame = ctk.CTkScrollableFrame(self, width=600, height=300)
+        self.queue_frame = ctk.CTkScrollableFrame(self, width=640, height=300)
         self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
 
         bot_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -475,10 +514,14 @@ class VideoApp(ctk.CTk):
             if state == "disabled":
                 item.combo_res.configure(state="disabled")
                 item.btn_yandex.configure(state="disabled")
+                item.btn_manual.configure(state="disabled")
+                item.btn_restart.configure(state="disabled")
             else:
+                item.btn_restart.configure(state="normal")
                 if item.mode == "Видео":
                     item.combo_res.configure(state="readonly")
                     item.btn_yandex.configure(state="normal")
+                    item.btn_manual.configure(state="normal")
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
@@ -643,40 +686,49 @@ class VideoApp(ctk.CTk):
         process_vot = None
         actual_translation_path = None
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (FOSWLY VOT-CLI)
-            if item.mode == "Видео" and item.use_yandex_translation:
-                item.status = "processing"
-                self.after(0, lambda: item.set_status("Инициализация перевода...", "purple"))
-                self.after(0, lambda: item.set_progress_mode("indeterminate")) # <-- ВКЛЮЧАЕМ АНИМАЦИЮ
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (FOSWLY VOT-CLI) ИЛИ ИСПОЛЬЗОВАНИЕ РУЧНОЙ ДОРОЖКИ
+            if item.mode == "Видео":
+                if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
+                    actual_translation_path = item.manual_audio_path
+                    self.after(0, lambda: item.set_status("Используется свой файл перевода...", "purple"))
                 
-                translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
-                cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
-                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                
-                process_vot = subprocess.Popen(cmd_vot, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
-                
-                for line in process_vot.stdout:
-                    if getattr(self, 'stop_requested', False):
-                        process_vot.terminate()
-                        raise Exception("Остановлено")
+                elif item.use_yandex_translation:
+                    item.status = "processing"
+                    self.after(0, lambda: item.set_status("Инициализация перевода...", "purple"))
+                    self.after(0, lambda: item.set_progress_mode("indeterminate"))
                     
-                    line_lower = line.lower()
-                    # Парсим ключевые слова вместо вывода всей строки
-                    if "performing" in line_lower or "waiting" in line_lower:
-                        self.after(0, lambda: item.set_status("Яндекс переводит (ожидание сервера)...", "purple"))
-                    elif "download" in line_lower:
-                        self.after(0, lambda: item.set_status("Скачивание аудио дорожки перевода...", "purple"))
-                            
-                process_vot.wait()
-                
-                self.after(0, lambda: item.set_progress_mode("determinate")) # <-- ВЫКЛЮЧАЕМ АНИМАЦИЮ
-                
-                if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
-                
-                if os.path.exists(translate_temp):
-                    actual_translation_path = translate_temp
-                else:
-                    raise Exception("Ошибка перевода (видео пропущено)")
+                    translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
+                    cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
+                    
+                    # Проверяем, какой режим голоса выбран в настройках
+                    if self.settings.get("voice_mode") == "lively":
+                        cmd_vot.append("--lively-voice")
+                        
+                    kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                    
+                    process_vot = subprocess.Popen(cmd_vot, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
+                    
+                    for line in process_vot.stdout:
+                        if getattr(self, 'stop_requested', False):
+                            process_vot.terminate()
+                            raise Exception("Остановлено")
+                        
+                        line_lower = line.lower()
+                        if "performing" in line_lower or "waiting" in line_lower:
+                            self.after(0, lambda: item.set_status("Яндекс переводит (ожидание сервера)...", "purple"))
+                        elif "download" in line_lower:
+                            self.after(0, lambda: item.set_status("Скачивание аудио дорожки перевода...", "purple"))
+                                
+                    process_vot.wait()
+                    
+                    self.after(0, lambda: item.set_progress_mode("determinate"))
+                    
+                    if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
+                    
+                    if os.path.exists(translate_temp):
+                        actual_translation_path = translate_temp
+                    else:
+                        raise Exception("Ошибка перевода (видео пропущено)")
 
             # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
             item.status = "downloading"
@@ -772,7 +824,7 @@ class VideoApp(ctk.CTk):
             if process_vot and process_vot.poll() is None: process_vot.terminate() 
             
             item.status = "error"
-            self.after(0, lambda: item.set_progress_mode("determinate"))
+            self.after(0, lambda: item.set_progress_mode("determinate")) 
             
             err_msg = str(e)
             
@@ -787,8 +839,10 @@ class VideoApp(ctk.CTk):
             
         finally:
             if actual_translation_path and os.path.exists(actual_translation_path):
-                try: os.remove(actual_translation_path)
-                except: pass
+                # Удаляем временный файл ТОЛЬКО если это не наш ручной файл
+                if getattr(item, 'manual_audio_path', None) != actual_translation_path:
+                    try: os.remove(actual_translation_path)
+                    except: pass
             self.clean_temp_files()
 
     def restore_ui_state(self):
