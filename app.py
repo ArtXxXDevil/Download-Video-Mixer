@@ -200,8 +200,8 @@ class QueueItemWidget(ctk.CTkFrame):
         self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
         self.btn_remove.pack(side="right")
         
-        # Кнопка перезапуска
-        self.btn_restart = ctk.CTkButton(top_frame, text="🔄", width=30, height=24, fg_color="transparent", text_color="blue", hover_color="#ccccff", command=self.restart_self)
+        # Кнопка перезапуска (исправленная)
+        self.btn_restart = ctk.CTkButton(top_frame, text="⟳", font=("Arial", 18, "bold"), width=30, height=24, fg_color="transparent", text_color="#1F6AA5", hover_color="#ccccff", command=self.restart_self)
         self.btn_restart.pack(side="right", padx=(0, 5))
 
         self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -295,6 +295,15 @@ class QueueItemWidget(ctk.CTkFrame):
     def update_progress(self, percent):
         self.progress.set(percent / 100.0)
         self.lbl_percent.configure(text=f"{int(percent)}%")
+
+    def set_progress_mode(self, mode="determinate"):
+        if not self.winfo_exists(): return
+        self.progress.configure(mode=mode)
+        if mode == "indeterminate":
+            self.progress.start()
+            self.lbl_percent.configure(text="~")
+        else:
+            self.progress.stop()
         
     def set_status(self, text, color="black"):
         self.lbl_status.configure(text=text, text_color=color)
@@ -314,6 +323,7 @@ class QueueItemWidget(ctk.CTkFrame):
             return
         
         self.status = "waiting"
+        self.set_progress_mode("determinate") # Выключаем анимацию
         self.set_status("В очереди", "gray")
         self.update_progress(0)
         self.app.update_queue_status()
@@ -637,40 +647,35 @@ class VideoApp(ctk.CTk):
             if item.mode == "Видео" and item.use_yandex_translation:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Инициализация перевода...", "purple"))
+                self.after(0, lambda: item.set_progress_mode("indeterminate")) # <-- ВКЛЮЧАЕМ АНИМАЦИЮ
                 
                 translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
                 cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 
-                # Запускаем через Popen, чтобы читать stdout в реальном времени
                 process_vot = subprocess.Popen(cmd_vot, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
                 
-                last_update = 0
                 for line in process_vot.stdout:
                     if getattr(self, 'stop_requested', False):
                         process_vot.terminate()
                         raise Exception("Остановлено")
                     
-                    line = line.strip()
-                    # Убираем ANSI-коды (цвета консоли), если vot-cli их отправляет
-                    clean_line = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', line).strip()
-                    
-                    if clean_line:
-                        current_time = time.time()
-                        # Ограничиваем частоту обновления UI (макс. 10 раз в сек), чтобы интерфейс не зависал
-                        if current_time - last_update > 0.1:
-                            display_line = clean_line[:35] + ("..." if len(clean_line) > 35 else "")
-                            self.after(0, lambda l=display_line: item.set_status(f"Перевод: {l}", "purple"))
-                            last_update = current_time
+                    line_lower = line.lower()
+                    # Парсим ключевые слова вместо вывода всей строки
+                    if "performing" in line_lower or "waiting" in line_lower:
+                        self.after(0, lambda: item.set_status("Яндекс переводит (ожидание сервера)...", "purple"))
+                    elif "download" in line_lower:
+                        self.after(0, lambda: item.set_status("Скачивание аудио дорожки перевода...", "purple"))
                             
                 process_vot.wait()
+                
+                self.after(0, lambda: item.set_progress_mode("determinate")) # <-- ВЫКЛЮЧАЕМ АНИМАЦИЮ
                 
                 if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
                 
                 if os.path.exists(translate_temp):
                     actual_translation_path = translate_temp
                 else:
-                    # Выбрасываем исключение. Это прервет загрузку текущего видео и переведет его в статус "Ошибка"
                     raise Exception("Ошибка перевода (видео пропущено)")
 
             # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
@@ -767,6 +772,8 @@ class VideoApp(ctk.CTk):
             if process_vot and process_vot.poll() is None: process_vot.terminate() 
             
             item.status = "error"
+            self.after(0, lambda: item.set_progress_mode("determinate"))
+            
             err_msg = str(e)
             
             if "Остановлено" in err_msg:
