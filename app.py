@@ -28,7 +28,8 @@ class SettingsManager:
     def load():
         defaults = {
             "add_translation": False,
-            "voice_mode": "lively", # "standard" или "lively"
+            "show_manual_audio": False,
+            "voice_mode": "standard", 
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": ""
@@ -52,8 +53,8 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title("Настройки")
         
-        window_width = 400
-        window_height = 400
+        window_width = 450
+        window_height = 430
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -70,16 +71,21 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.settings = SettingsManager.load()
 
-        ctk.CTkLabel(self, text="Параметры аудио", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(self, text="Параметры интерфейса и перевода", font=("Arial", 16, "bold")).pack(pady=(10, 5))
 
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
         self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.toggle_sliders)
         self.check_trans.pack(pady=5)
+        
+        self.manual_var = ctk.BooleanVar(value=self.settings.get("show_manual_audio", False))
+        self.check_manual = ctk.CTkCheckBox(self, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
+        self.check_manual.pack(pady=5)
 
-        # Выбор режима голоса
         self.voice_var = ctk.StringVar(value="Живые голоса" if self.settings.get("voice_mode") == "lively" else "Обычные голоса")
         self.voice_seg = ctk.CTkSegmentedButton(self, values=["Обычные голоса", "Живые голоса"], variable=self.voice_var)
-        self.voice_seg.pack(pady=(0, 10))
+        self.voice_seg.pack(pady=(5, 10))
+
+        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(5, 5))
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
         self.lbl_vol1.pack()
@@ -93,8 +99,8 @@ class SettingsWindow(ctk.CTkToplevel):
         self.slider_vol2.set(self.settings["vol_translate"])
         self.slider_vol2.pack(pady=5)
 
-        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(15, 5))
-        self.path_entry = ctk.CTkEntry(self, width=300)
+        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        self.path_entry = ctk.CTkEntry(self, width=350)
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
         ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5)
@@ -121,6 +127,7 @@ class SettingsWindow(ctk.CTkToplevel):
     def on_close(self):
         new_settings = {
             "add_translation": self.trans_var.get(),
+            "show_manual_audio": self.manual_var.get(),
             "voice_mode": "lively" if self.voice_var.get() == "Живые голоса" else "standard",
             "vol_original": int(self.slider_vol1.get()),
             "vol_translate": int(self.slider_vol2.get()),
@@ -195,21 +202,20 @@ class QueueItemWidget(ctk.CTkFrame):
         self.mode = mode
         self.status = "waiting" 
         
-        self.use_yandex_translation = False
+        self.use_yandex_translation = self.app.settings.get("add_translation", False)
         self.manual_audio_path = None
         
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
         top_frame.pack(fill="x", padx=5, pady=2)
         
-        display_title = (self.title_text[:50] + '...') if len(self.title_text) > 50 else self.title_text
+        display_title = (self.title_text[:65] + '...') if len(self.title_text) > 65 else self.title_text
         self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"))
         self.lbl_title.pack(side="left")
         
         self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
         self.btn_remove.pack(side="right")
         
-        # Исправленная кнопка перезапуска
-        self.btn_restart = ctk.CTkButton(top_frame, text="↻", font=("Arial", 18, "bold"), width=30, height=24, fg_color="transparent", text_color="#1F6AA5", hover_color="#ccccff", command=self.restart_self)
+        self.btn_restart = ctk.CTkButton(top_frame, text="↻ Сброс", font=("Arial", 11, "bold"), width=60, height=24, fg_color="transparent", text_color="#1F6AA5", hover_color="#ccccff", command=self.restart_self)
         self.btn_restart.pack(side="right", padx=(0, 5))
 
         self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -241,7 +247,6 @@ class QueueItemWidget(ctk.CTkFrame):
         if self.app.is_downloading: return
         
         if self.manual_audio_path:
-            # Сброс ручного файла
             self.manual_audio_path = None
             self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
             return
@@ -250,7 +255,6 @@ class QueueItemWidget(ctk.CTkFrame):
         if path:
             self.manual_audio_path = os.path.abspath(path)
             self.btn_manual.configure(text="📂 Выбран (сбросить)", fg_color="green", hover_color="darkgreen")
-            # Автоматически отключаем яндекс-перевод, чтобы избежать конфликтов
             self.use_yandex_translation = False
             self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
 
@@ -262,7 +266,14 @@ class QueueItemWidget(ctk.CTkFrame):
         
         if self.mode == "Видео":
             self.combo_res.pack(side="left", padx=(0, 10))
-            self.update_yandex_visibility(self.app.settings.get("add_translation"))
+            
+            self.btn_yandex.pack(side="left", padx=5)
+            if self.use_yandex_translation:
+                self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
+            else:
+                self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
+                
+            self.update_yandex_visibility()
             
             if self.combo_res.cget("values") == ["4K (2160p)"] and self.status == "waiting":
                 self.status = "fetching_formats"
@@ -297,37 +308,28 @@ class QueueItemWidget(ctk.CTkFrame):
         if self.status == "fetching_formats":
             self.status = "waiting"
 
-    def update_yandex_visibility(self, global_trans):
+    def update_yandex_visibility(self):
         if self.mode != "Видео":
-            self.btn_yandex.pack_forget()
             self.btn_manual.pack_forget()
             return
             
-        self.btn_yandex.pack_forget()
-        self.btn_manual.pack_forget()
-            
-        if global_trans:
-            self.btn_yandex.pack(side="left", padx=5)
-            self.use_yandex_translation = True
-            self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
-            # Сбрасываем ручной аудио-файл
-            self.manual_audio_path = None
-            self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
+        if self.app.settings.get("show_manual_audio", False):
+            if not self.btn_manual.winfo_ismapped():
+                self.btn_manual.pack(side="left", padx=5)
         else:
-            self.use_yandex_translation = False
-            self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
-            
-        # Ручная дорожка доступна всегда, даже если Яндекс отключен глобально
-        self.btn_manual.pack(side="left", padx=5)
+            self.btn_manual.pack_forget()
+            self.manual_audio_path = None
+            if self.btn_manual.cget("text") != "📂 Свой аудио-файл":
+                self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
 
     def toggle_yandex(self):
         if self.app.is_downloading: return
         self.use_yandex_translation = not self.use_yandex_translation
         if self.use_yandex_translation:
             self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
-            # Если включили Яндекс, сбрасываем ручной файл
             self.manual_audio_path = None
-            self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
+            if self.btn_manual.winfo_exists():
+                self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
         else:
             self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
 
@@ -367,11 +369,10 @@ class QueueItemWidget(ctk.CTkFrame):
         self.update_progress(0)
         self.app.update_queue_status()
 
-
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.6 (Manual Track & Live Voices)")
+        self.title("Download Video Mixer v3.7")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -391,7 +392,7 @@ class VideoApp(ctk.CTk):
                 self.icon_path = icon_path
                 self.iconbitmap(icon_path)
         
-        self.geometry("680x600")
+        self.geometry("850x650")
         self.settings = SettingsManager.load()
         
         if self.os_name == "Windows":
@@ -457,7 +458,7 @@ class VideoApp(ctk.CTk):
         self.res_combobox.pack(side="left", padx=5)
         self.res_combobox.set("4K (2160p)")
 
-        self.queue_frame = ctk.CTkScrollableFrame(self, width=640, height=300)
+        self.queue_frame = ctk.CTkScrollableFrame(self, width=810, height=350)
         self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
 
         bot_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -514,20 +515,21 @@ class VideoApp(ctk.CTk):
             if state == "disabled":
                 item.combo_res.configure(state="disabled")
                 item.btn_yandex.configure(state="disabled")
-                item.btn_manual.configure(state="disabled")
+                if item.btn_manual.winfo_exists():
+                    item.btn_manual.configure(state="disabled")
                 item.btn_restart.configure(state="disabled")
             else:
                 item.btn_restart.configure(state="normal")
                 if item.mode == "Видео":
                     item.combo_res.configure(state="readonly")
                     item.btn_yandex.configure(state="normal")
-                    item.btn_manual.configure(state="normal")
+                    if item.btn_manual.winfo_exists():
+                        item.btn_manual.configure(state="normal")
 
     def refresh_settings(self):
         self.settings = SettingsManager.load()
-        global_trans = self.settings.get("add_translation")
         for item in self.queue_items:
-            item.update_yandex_visibility(global_trans)
+            item.update_yandex_visibility()
 
     def open_settings(self): SettingsWindow(self)
 
@@ -700,9 +702,11 @@ class VideoApp(ctk.CTk):
                     translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
                     cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
                     
-                    # Проверяем, какой режим голоса выбран в настройках
                     if self.settings.get("voice_mode") == "lively":
                         cmd_vot.append("--lively-voice")
+                        
+                    # Добавляем стандартный User-Agent, чтобы обойти базовые защиты Яндекса
+                    cmd_vot.append("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
                         
                     kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                     
@@ -839,7 +843,6 @@ class VideoApp(ctk.CTk):
             
         finally:
             if actual_translation_path and os.path.exists(actual_translation_path):
-                # Удаляем временный файл ТОЛЬКО если это не наш ручной файл
                 if getattr(item, 'manual_audio_path', None) != actual_translation_path:
                     try: os.remove(actual_translation_path)
                     except: pass
