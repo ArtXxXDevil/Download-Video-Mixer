@@ -18,13 +18,9 @@ import time
 import traceback
 from datetime import datetime
 
-# Исправление путей для macOS (.app bundle)
+# Оставляем системный путь для всех ОС
 if getattr(sys, 'frozen', False):
-    if platform.system() == "Darwin":
-        # Выходим из YourApp.app/Contents/MacOS наружу, чтобы файлы качались рядом с приложением
-        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
-    else:
-        BASE_DIR = os.path.dirname(sys.executable)
+    BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -75,7 +71,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 360
+        window_height = 500  # Увеличена высота, чтобы UI не сплющивало
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -92,31 +88,31 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.settings = SettingsManager.load()
 
-        ctk.CTkLabel(self, text="Параметры интерфейса и перевода", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(self, text="Параметры интерфейса и перевода", font=("Arial", 16, "bold")).pack(pady=(15, 5))
 
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
         self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.parent.refresh_settings)
-        self.check_trans.pack(pady=5)
+        self.check_trans.pack(pady=10)
         
         self.manual_var = ctk.BooleanVar(value=self.settings.get("show_manual_audio", False))
         self.check_manual = ctk.CTkCheckBox(self, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
-        self.check_manual.pack(pady=5)
+        self.check_manual.pack(pady=10)
 
-        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(20, 5))
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
         self.lbl_vol1.pack()
         self.slider_vol1 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
         self.slider_vol1.set(self.settings["vol_original"])
-        self.slider_vol1.pack(pady=5)
+        self.slider_vol1.pack(pady=10)
 
         self.lbl_vol2 = ctk.CTkLabel(self, text=f"Громкость перевода: {self.settings['vol_translate']}%")
         self.lbl_vol2.pack()
         self.slider_vol2 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
         self.slider_vol2.set(self.settings["vol_translate"])
-        self.slider_vol2.pack(pady=5)
+        self.slider_vol2.pack(pady=10)
 
-        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(20, 5))
         self.path_entry = ctk.CTkEntry(self, width=350)
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
@@ -277,7 +273,7 @@ class QueueItemWidget(ctk.CTkFrame):
         
         if self.mode == "Видео":
             self.combo_res.pack(side="left", padx=(0, 10))
-            self.update_yandex_visibility()
+            self.update_yandex_visibility(is_refresh=True)
             
             if self.combo_res.cget("values") == ["4K (2160p)"] and self.status == "waiting":
                 self.status = "fetching_formats"
@@ -312,7 +308,7 @@ class QueueItemWidget(ctk.CTkFrame):
         if self.status == "fetching_formats":
             self.status = "waiting"
 
-    def update_yandex_visibility(self):
+    def update_yandex_visibility(self, is_refresh=False):
         if self.mode != "Видео":
             self.btn_yandex.pack_forget()
             self.btn_manual.pack_forget()
@@ -323,6 +319,8 @@ class QueueItemWidget(ctk.CTkFrame):
         if global_trans:
             if not self.btn_yandex.winfo_ismapped():
                 self.btn_yandex.pack(side="left", padx=5)
+            # Включаем принудительно, если была нажата кнопка в настройках или при инициализации
+            if is_refresh:
                 self.use_yandex_translation = True
                 self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
         else:
@@ -388,7 +386,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v4.2 (Smart Translation & Logging)")
+        self.title("Download Video Mixer v4.3 (Smart Polling Core)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -552,7 +550,7 @@ class VideoApp(ctk.CTk):
     def refresh_settings(self):
         self.settings = SettingsManager.load()
         for item in self.queue_items:
-            item.update_yandex_visibility()
+            item.update_yandex_visibility(is_refresh=True)
 
     def open_settings(self): SettingsWindow(self)
 
@@ -708,11 +706,10 @@ class VideoApp(ctk.CTk):
         
     def download_item(self, item):
         process = None
-        process_vot = None
         actual_translation_path = None
         vot_log_output = []
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (JS NODE CLI) ИЛИ ИСПОЛЬЗОВАНИЕ РУЧНОЙ ДОРОЖКИ
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА С УМНЫМ ЦИКЛОМ ОЖИДАНИЯ
             if item.mode == "Видео":
                 if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
                     actual_translation_path = item.manual_audio_path
@@ -720,7 +717,6 @@ class VideoApp(ctk.CTk):
                 
                 elif getattr(item, 'use_yandex_translation', False) and self.vot_path:
                     item.status = "processing"
-                    self.after(0, lambda: item.set_status("Инициализация перевода...", "purple"))
                     self.after(0, lambda: item.set_progress_mode("indeterminate"))
                     
                     translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
@@ -729,45 +725,60 @@ class VideoApp(ctk.CTk):
                         self.vot_path, 
                         f"--output={self.settings['save_path']}",
                         f"--output-file={item.video_id}.mp3",
-                        "--voice-style=tts", # Жестко заданный стабильный голос
+                        "--voice-style=tts",
                         item.url
                     ]
                         
                     kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                    
                     env = os.environ.copy()
                     env["PATH"] = os.path.dirname(self.node_exe) + os.pathsep + env.get("PATH", "")
                     
-                    process_vot = subprocess.Popen(cmd_vot, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
+                    max_attempts = 10 # 5 минут максимум (10 попыток по 30 сек)
+                    vot_success = False
                     
-                    for line in process_vot.stdout:
+                    for attempt in range(1, max_attempts + 1):
                         if getattr(self, 'stop_requested', False):
-                            process_vot.terminate()
                             raise Exception("Остановлено")
+
+                        self.after(0, lambda a=attempt: item.set_status(f"Перевод: запрос к серверу ({a}/{max_attempts})...", "purple"))
                         
-                        clean_line = line.strip()
-                        if clean_line:
-                            vot_log_output.append(clean_line)
+                        process_vot = subprocess.Popen(cmd_vot, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
                         
-                        line_lower = line.lower()
-                        if "performing" in line_lower or "waiting" in line_lower:
-                            self.after(0, lambda: item.set_status("Яндекс переводит (ожидание сервера)...", "purple"))
-                        elif "download" in line_lower or "загруз" in line_lower:
-                            self.after(0, lambda: item.set_status("Скачивание аудио дорожки перевода...", "purple"))
-                                
-                    process_vot.wait()
-                    
-                    self.after(0, lambda: item.set_progress_mode("determinate"))
-                    
-                    if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
-                    
-                    if os.path.exists(translate_temp):
-                        actual_translation_path = translate_temp
-                    else:
-                        raise Exception("Ошибка перевода (не удалось получить аудио)")
+                        for line in process_vot.stdout:
+                            if getattr(self, 'stop_requested', False):
+                                process_vot.terminate()
+                                raise Exception("Остановлено")
+                            
+                            clean_line = line.strip()
+                            if clean_line:
+                                vot_log_output.append(clean_line)
+                            
+                            line_lower = line.lower()
+                            if "performing" in line_lower or "waiting" in line_lower:
+                                self.after(0, lambda: item.set_status("Яндекс генерирует аудио...", "purple"))
+                            elif "download" in line_lower or "загруз" in line_lower:
+                                self.after(0, lambda: item.set_status("Скачивание аудио дорожки перевода...", "purple"))
+                                    
+                        process_vot.wait()
+                        
+                        if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
+                        
+                        if os.path.exists(translate_temp):
+                            actual_translation_path = translate_temp
+                            vot_success = True
+                            break
+                        else:
+                            if attempt < max_attempts:
+                                self.after(0, lambda: item.set_status("Яндекс просит подождать... Пауза 30 сек...", "purple"))
+                                for _ in range(30):
+                                    if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
+                                    time.sleep(1)
+                            else:
+                                raise Exception("Ошибка: сервер Яндекса не отдал файл перевода за 5 минут")
 
             # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
             item.status = "downloading"
+            self.after(0, lambda: item.set_progress_mode("determinate"))
             self.after(0, lambda: item.set_status("Скачивание видео...", "blue"))
             
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
@@ -857,7 +868,6 @@ class VideoApp(ctk.CTk):
             
         except Exception as e:
             if process and process.poll() is None: process.terminate() 
-            if process_vot and process_vot.poll() is None: process_vot.terminate() 
             
             item.status = "error"
             self.after(0, lambda: item.set_progress_mode("determinate")) 
@@ -867,9 +877,8 @@ class VideoApp(ctk.CTk):
             if "Остановлено" in err_msg:
                 status_msg = "⏹ Остановлено"
             elif "Ошибка перевода" in err_msg:
-                status_msg = f"❌ Ошибка перевода"
-                # Записываем в лог только если это системная ошибка (не остановка пользователем)
-                log_error(item.video_id, err_msg, e, " | ".join(vot_log_output[-10:]))
+                status_msg = f"❌ Ошибка перевода (подробнее в error.log)"
+                log_error(item.video_id, err_msg, e, " | ".join(vot_log_output[-15:]))
             else:
                 status_msg = "❌ Ошибка"
                 log_error(item.video_id, err_msg, e)
@@ -896,7 +905,7 @@ class VideoApp(ctk.CTk):
             self.status_label.configure(text="🎉 Все загрузки успешно завершены!", text_color="green")
             self.open_save_folder()
         else:
-            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total} (См. error.log)", text_color="red")
+            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}", text_color="red")
             if done > 0:
                 self.open_save_folder()
             
