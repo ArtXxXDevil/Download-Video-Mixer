@@ -29,8 +29,7 @@ class SettingsManager:
         defaults = {
             "add_translation": False,
             "show_manual_audio": False,
-            "voice_mode": "standard", 
-            "yandex_token": "",
+            "voice_mode": "lively", # Живые голоса по умолчанию работают в JS!
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": ""
@@ -54,8 +53,8 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title("Настройки")
         
-        window_width = 460
-        window_height = 500
+        window_width = 450
+        window_height = 420
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -84,16 +83,9 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.voice_var = ctk.StringVar(value="Живые голоса" if self.settings.get("voice_mode") == "lively" else "Обычные голоса")
         self.voice_seg = ctk.CTkSegmentedButton(self, values=["Обычные голоса", "Живые голоса"], variable=self.voice_var)
-        self.voice_seg.pack(pady=(5, 5))
-        
-        token_frame = ctk.CTkFrame(self, fg_color="transparent")
-        token_frame.pack(fill="x", padx=40, pady=2)
-        ctk.CTkLabel(token_frame, text="Yandex API Token (нужен для Живых голосов):", font=("Arial", 11)).pack(anchor="w")
-        self.token_entry = ctk.CTkEntry(token_frame, width=370, placeholder_text="Вставьте токен Yandex OAuth...")
-        self.token_entry.insert(0, self.settings.get("yandex_token", ""))
-        self.token_entry.pack(fill="x", pady=(2, 5))
+        self.voice_seg.pack(pady=(5, 10))
 
-        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(5, 5))
+        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(10, 5))
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
         self.lbl_vol1.pack()
@@ -137,7 +129,6 @@ class SettingsWindow(ctk.CTkToplevel):
             "add_translation": self.trans_var.get(),
             "show_manual_audio": self.manual_var.get(),
             "voice_mode": "lively" if self.voice_var.get() == "Живые голоса" else "standard",
-            "yandex_token": self.token_entry.get().strip(),
             "vol_original": int(self.slider_vol1.get()),
             "vol_translate": int(self.slider_vol2.get()),
             "save_path": self.path_entry.get()
@@ -381,13 +372,14 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.7")
+        self.title("Download Video Mixer v4.0 (JS Core / No Tokens)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
         self.stop_requested = False
         self.is_downloading = False
         self.queue_items = [] 
+        self.vot_path = None # Путь к JS CLI
         
         def resource_path(relative_path):
             try: base_path = sys._MEIPASS
@@ -407,21 +399,14 @@ class VideoApp(ctk.CTk):
         if self.os_name == "Windows":
             self.ffmpeg_exe_name = "ffmpeg.exe"
             self.ytdlp_exe_name = "yt-dlp.exe"
-            self.vot_exe_name = "vot-cli.exe"
-            
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-windows-x64.exe.zip" 
         else:
             self.ffmpeg_exe_name = "ffmpeg"
             self.ytdlp_exe_name = "yt-dlp"
-            self.vot_exe_name = "vot-cli"
-            
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-            self.vot_url = "https://github.com/FOSWLY/vot-cli/releases/latest/download/vot-macos-x64.zip" 
             
         self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
         self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
-        self.vot_path = os.path.join(APP_DIR, self.vot_exe_name)
 
         self.startupinfo = None
         if self.os_name == "Windows":
@@ -697,26 +682,32 @@ class VideoApp(ctk.CTk):
         process_vot = None
         actual_translation_path = None
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (FOSWLY VOT-CLI) ИЛИ ИСПОЛЬЗОВАНИЕ РУЧНОЙ ДОРОЖКИ
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (JS NODE CLI) ИЛИ ИСПОЛЬЗОВАНИЕ РУЧНОЙ ДОРОЖКИ
             if item.mode == "Видео":
                 if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
                     actual_translation_path = item.manual_audio_path
                     self.after(0, lambda: item.set_status("Используется свой файл перевода...", "purple"))
                 
-                elif item.use_yandex_translation:
+                elif item.use_yandex_translation and self.vot_path:
                     item.status = "processing"
                     self.after(0, lambda: item.set_status("Инициализация перевода...", "purple"))
                     self.after(0, lambda: item.set_progress_mode("indeterminate"))
                     
                     translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
-                    cmd_vot = [self.vot_path, item.url, f'--outdir={self.settings["save_path"]}']
+                    
+                    # Использование новой JS утилиты
+                    cmd_vot = [
+                        self.vot_path, 
+                        f"--output={self.settings['save_path']}",
+                        f"--output-file={item.video_id}.mp3"
+                    ]
                     
                     if self.settings.get("voice_mode") == "lively":
-                        cmd_vot.append("--lively-voice")
-                        # Добавляем токен, если он указан в настройках
-                        token = self.settings.get("yandex_token", "").strip()
-                        if token:
-                            cmd_vot.extend(["--api-token", token])
+                        cmd_vot.append("--voice-style=live")
+                    else:
+                        cmd_vot.append("--voice-style=tts")
+                        
+                    cmd_vot.append(item.url)
                         
                     kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                     
@@ -730,7 +721,7 @@ class VideoApp(ctk.CTk):
                         line_lower = line.lower()
                         if "performing" in line_lower or "waiting" in line_lower:
                             self.after(0, lambda: item.set_status("Яндекс переводит (ожидание сервера)...", "purple"))
-                        elif "download" in line_lower:
+                        elif "download" in line_lower or "загруз" in line_lower:
                             self.after(0, lambda: item.set_status("Скачивание аудио дорожки перевода...", "purple"))
                                 
                     process_vot.wait()
@@ -902,9 +893,17 @@ class VideoApp(ctk.CTk):
         ctx.verify_mode = ssl.CERT_NONE
         headers = {'User-Agent': 'Mozilla/5.0'}
 
+        # Проверка обязательных модулей Node.js
+        node_path = shutil.which("node")
+        npm_path = shutil.which("npm")
+        
+        if not node_path or not npm_path:
+            self.after(0, lambda: messagebox.showerror("Необходим Node.js", "Для работы JS-версии Яндекс.Переводчика (с поддержкой живых голосов) требуется Node.js.\n\nПожалуйста, скачайте и установите его с официального сайта: https://nodejs.org/\n\nПосле установки ОБЯЗАТЕЛЬНО перезагрузите компьютер!"))
+            self.after(0, lambda: self.status_label.configure(text="❌ Ошибка: Установите Node.js", text_color="red"))
+            return
+
         dependencies = [
             (self.ytdlp_path, self.ytdlp_url, "yt-dlp"),
-            (self.vot_path, self.vot_url, "vot-cli"),
             (self.ffmpeg_path, None, "FFmpeg")
         ]
 
@@ -925,25 +924,6 @@ class VideoApp(ctk.CTk):
                                         target.write(source.read())
                                     break
                         if os.path.exists(zip_path): os.remove(zip_path)
-                        
-                    elif name == "vot-cli":
-                        temp_path = os.path.join(APP_DIR, "vot_temp.tmp")
-                        req = urllib.request.Request(url, headers=headers)
-                        with urllib.request.urlopen(req, context=ctx) as response, open(temp_path, 'wb') as out_file:
-                            shutil.copyfileobj(response, out_file)
-                        
-                        try:
-                            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                                for file_info in zip_ref.infolist():
-                                    if not file_info.filename.endswith('/') and "vot" in file_info.filename.lower():
-                                        with zip_ref.open(file_info) as source, open(path, "wb") as target:
-                                            target.write(source.read())
-                                        break
-                        except zipfile.BadZipFile:
-                            shutil.copyfile(temp_path, path)
-                            
-                        if os.path.exists(temp_path): os.remove(temp_path)
-                        
                     else:
                         req = urllib.request.Request(url, headers=headers)
                         with urllib.request.urlopen(req, context=ctx) as response, open(path, 'wb') as out_file:
@@ -954,6 +934,36 @@ class VideoApp(ctk.CTk):
                     self.after(0, lambda n=name: self.status_label.configure(text=f"❌ Ошибка скачивания {n}", text_color="red"))
                     print(f"Error downloading {name}: {e}")
                     return
+
+        # Установка vot-cli-live через NPM напрямую из GitHub
+        bin_dir = os.path.join(APP_DIR, "node_modules", ".bin")
+        possible_bins = ["vot-cli-live.cmd", "vot-cli-live", "vot-cli.cmd", "vot-cli"]
+        
+        self.vot_path = None
+        for b in possible_bins:
+            p = os.path.join(bin_dir, b)
+            if os.path.exists(p):
+                self.vot_path = p
+                break
+
+        if not self.vot_path:
+            self.after(0, lambda: self.status_label.configure(text="Установка JS-версии vot-cli...", text_color="orange"))
+            try:
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                subprocess.run([npm_path, "install", "github:fantomcheg/vot-cli-live", "--no-save", "--prefix", APP_DIR], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+                
+                for b in possible_bins:
+                    p = os.path.join(bin_dir, b)
+                    if os.path.exists(p):
+                        self.vot_path = p
+                        break
+                        
+                if not self.vot_path:
+                    raise Exception("Бинарный файл vot-cli не найден после npm install")
+            except Exception as e:
+                self.after(0, lambda: self.status_label.configure(text="❌ Ошибка установки JS-модуля vot-cli", text_color="red"))
+                print(f"NPM Install error: {e}")
+                return
 
         self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
         try:
