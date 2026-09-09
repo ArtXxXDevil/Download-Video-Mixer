@@ -390,7 +390,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v4.7 (Threaded Core & Fast DL)")
+        self.title("Download Video Mixer v3")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -723,7 +723,6 @@ class VideoApp(ctk.CTk):
         actual_translation_path = None
         vot_log_output = []
         
-        # Гарантированная очистка любых оборванных файлов yt-dlp перед стартом
         self.clean_temp_files()
         
         try:
@@ -824,18 +823,19 @@ class VideoApp(ctk.CTk):
             if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
                 if is_audio:
                     cmd = [
-                        self.ytdlp_path, '--force-overwrites', '-N', '6', '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
+                        self.ytdlp_path, '--force-overwrites', '-N', '4', '--socket-timeout', '15', '--retry-sleep', '3',
+                        '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
                         '--audio-quality', '0', '-o', temp_template, '--newline', '--no-playlist', 
-                        '--retries', '5', '--fragment-retries', '5', '--no-check-certificate',
+                        '--retries', '10', '--fragment-retries', '10', '--no-check-certificate',
                         '--ffmpeg-location', self.ffmpeg_path, item.url
                     ]
                 else:
                     MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
                     max_dim = MAX_DIMS.get(res_num, 1920)
-                    # Добавлен аргумент -N 6 (скачивание в 6 потоков для обхода замедления)
                     cmd = [
-                        self.ytdlp_path, '--force-overwrites', '-N', '6', '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                        '-o', temp_video, '--newline', '--no-playlist', '--retries', '5', '--fragment-retries', '5',
+                        self.ytdlp_path, '--force-overwrites', '-N', '4', '--socket-timeout', '15', '--retry-sleep', '3',
+                        '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                        '-o', temp_video, '--newline', '--no-playlist', '--retries', '10', '--fragment-retries', '10',
                         '--no-check-certificate', '--ffmpeg-location', self.ffmpeg_path, item.url
                     ]
                 
