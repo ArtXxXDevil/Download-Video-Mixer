@@ -74,7 +74,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 400 # Вернули компактную высоту
+        window_height = 400 
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -95,32 +95,32 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
         self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.parent.refresh_settings)
-        self.check_trans.pack(pady=5) # Уменьшили отступ
+        self.check_trans.pack(pady=5) 
         
         self.manual_var = ctk.BooleanVar(value=self.settings.get("show_manual_audio", False))
         self.check_manual = ctk.CTkCheckBox(self, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
-        self.check_manual.pack(pady=5) # Уменьшили отступ
+        self.check_manual.pack(pady=5) 
 
-        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(10, 5)) # Уменьшили отступ
+        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(10, 5)) 
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
         self.lbl_vol1.pack()
         self.slider_vol1 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
         self.slider_vol1.set(self.settings["vol_original"])
-        self.slider_vol1.pack(pady=5) # Уменьшили отступ
+        self.slider_vol1.pack(pady=5) 
 
         self.lbl_vol2 = ctk.CTkLabel(self, text=f"Громкость перевода: {self.settings['vol_translate']}%")
         self.lbl_vol2.pack()
         self.slider_vol2 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
         self.slider_vol2.set(self.settings["vol_translate"])
-        self.slider_vol2.pack(pady=5) # Уменьшили отступ
+        self.slider_vol2.pack(pady=5) 
 
-        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(10, 5)) # Уменьшили отступ
+        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(10, 5)) 
         self.path_entry = ctk.CTkEntry(self, width=350)
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
         
-        ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5) # Убрали огромный нижний отступ
+        ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5) 
 
         self.update_labels()
 
@@ -390,7 +390,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.0")
+        self.title("Download Video Mixer v4.7 (Threaded Core & Fast DL)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -708,15 +708,13 @@ class VideoApp(ctk.CTk):
                 
         self.after(0, self.restore_ui_state)
 
-    def prepare_download_environment(self):
+    def clean_temp_files(self):
         save_dir = self.settings.get("save_path", "")
-        if not save_dir or not os.path.exists(save_dir):
-            return
-        for ext in ['mp4', 'm4a', 'mp3', 'webm', 'part', 'ytdl']:
-            try:
-                os.remove(os.path.join(save_dir, f"temp_v.{ext}"))
-            except:
-                pass
+        if save_dir and os.path.exists(save_dir):
+            for file_name in os.listdir(save_dir):
+                if file_name.startswith("temp_v") or file_name.startswith("temp_trans_"):
+                    try: os.remove(os.path.join(save_dir, file_name))
+                    except: pass
         
     def download_item(self, item):
         process = None
@@ -725,10 +723,11 @@ class VideoApp(ctk.CTk):
         actual_translation_path = None
         vot_log_output = []
         
-        self.prepare_download_environment()
+        # Гарантированная очистка любых оборванных файлов yt-dlp перед стартом
+        self.clean_temp_files()
         
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (JS NODE CLI) С КОРОТКИМ ЦИКЛОМ (3 попытки по 15 сек)
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА 
             if item.mode == "Видео":
                 if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
                     actual_translation_path = item.manual_audio_path
@@ -825,17 +824,18 @@ class VideoApp(ctk.CTk):
             if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
                 if is_audio:
                     cmd = [
-                        self.ytdlp_path, '--force-overwrites', '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
+                        self.ytdlp_path, '--force-overwrites', '-N', '6', '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
                         '--audio-quality', '0', '-o', temp_template, '--newline', '--no-playlist', 
-                        '--retries', '20', '--fragment-retries', '20', '--no-check-certificate',
+                        '--retries', '5', '--fragment-retries', '5', '--no-check-certificate',
                         '--ffmpeg-location', self.ffmpeg_path, item.url
                     ]
                 else:
                     MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
                     max_dim = MAX_DIMS.get(res_num, 1920)
+                    # Добавлен аргумент -N 6 (скачивание в 6 потоков для обхода замедления)
                     cmd = [
-                        self.ytdlp_path, '--force-overwrites', '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                        '-o', temp_video, '--newline', '--no-playlist', '--retries', '20', '--fragment-retries', '20',
+                        self.ytdlp_path, '--force-overwrites', '-N', '6', '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                        '-o', temp_video, '--newline', '--no-playlist', '--retries', '5', '--fragment-retries', '5',
                         '--no-check-certificate', '--ffmpeg-location', self.ffmpeg_path, item.url
                     ]
                 
@@ -880,7 +880,7 @@ class VideoApp(ctk.CTk):
 
             if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
 
-            # 3. ФИНАЛЬНАЯ СКЛЕЙКА (FFMPEG) с плавным прогресс-баром
+            # 3. ФИНАЛЬНАЯ СКЛЕЙКА (FFMPEG)
             if not is_audio and actual_translation_path:
                 item.status = "processing"
                 self.after(0, lambda: item.set_status("Склейка дорожек (FFmpeg)...", "orange"))
@@ -993,14 +993,6 @@ class VideoApp(ctk.CTk):
         self.clean_temp_files()
         self.destroy()
         os._exit(0)
-
-    def clean_temp_files(self):
-        save_dir = self.settings.get("save_path", "")
-        if save_dir and os.path.exists(save_dir):
-            for file_name in os.listdir(save_dir):
-                if file_name.startswith("temp_v") or file_name.startswith("temp_trans_"):
-                    try: os.remove(os.path.join(save_dir, file_name))
-                    except: pass
 
     def check_dependencies(self):
         ctx = ssl.create_default_context()
