@@ -18,6 +18,7 @@ import time
 import traceback
 from datetime import datetime
 
+# Оставляем системный путь для всех ОС
 if getattr(sys, 'frozen', False):
     if platform.system() == "Darwin":
         BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
@@ -73,7 +74,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 420
+        window_height = 400 # Вернули компактную высоту
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -90,35 +91,36 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.settings = SettingsManager.load()
 
-        ctk.CTkLabel(self, text="Параметры интерфейса и перевода", font=("Arial", 16, "bold")).pack(pady=(15, 5))
+        ctk.CTkLabel(self, text="Параметры интерфейса и перевода", font=("Arial", 16, "bold")).pack(pady=(10, 5))
 
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
         self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.parent.refresh_settings)
-        self.check_trans.pack(pady=10)
+        self.check_trans.pack(pady=5) # Уменьшили отступ
         
         self.manual_var = ctk.BooleanVar(value=self.settings.get("show_manual_audio", False))
         self.check_manual = ctk.CTkCheckBox(self, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
-        self.check_manual.pack(pady=10)
+        self.check_manual.pack(pady=5) # Уменьшили отступ
 
-        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(10, 5)) # Уменьшили отступ
 
         self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
         self.lbl_vol1.pack()
         self.slider_vol1 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
         self.slider_vol1.set(self.settings["vol_original"])
-        self.slider_vol1.pack(pady=10)
+        self.slider_vol1.pack(pady=5) # Уменьшили отступ
 
         self.lbl_vol2 = ctk.CTkLabel(self, text=f"Громкость перевода: {self.settings['vol_translate']}%")
         self.lbl_vol2.pack()
         self.slider_vol2 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
         self.slider_vol2.set(self.settings["vol_translate"])
-        self.slider_vol2.pack(pady=10)
+        self.slider_vol2.pack(pady=5) # Уменьшили отступ
 
-        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(10, 5)) # Уменьшили отступ
         self.path_entry = ctk.CTkEntry(self, width=350)
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
-        ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5)
+        
+        ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5) # Убрали огромный нижний отступ
 
         self.update_labels()
 
@@ -388,7 +390,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v4.5 (Smart UI & Total Progress)")
+        self.title("Download Video Mixer v3.0")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -1035,13 +1037,13 @@ class VideoApp(ctk.CTk):
                 return
 
         dependencies = [
-            (self.ytdlp_path, self.ytdlp_url, "yt-dlp"),
-            (self.ffmpeg_path, None, "FFmpeg")
+            (self.ytdlp_path, self.ytdlp_url, "yt-dlp", "≈30MB"),
+            (self.ffmpeg_path, None, "FFmpeg", "≈40MB")
         ]
 
-        for path, url, name in dependencies:
+        for path, url, name, size in dependencies:
             if not os.path.exists(path):
-                self.after(0, lambda n=name: self.status_label.configure(text=f"Скачивание {n}...", text_color="orange"))
+                self.after(0, lambda n=name, s=size: self.status_label.configure(text=f"Скачивание {n} ({s})...", text_color="orange"))
                 try:
                     if name == "FFmpeg":
                         dl_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" if self.os_name == "Windows" else "https://evermeet.cx/ffmpeg/getrelease/zip"
