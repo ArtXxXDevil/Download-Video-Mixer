@@ -42,7 +42,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: macOS (Universal)
+    name: macOS
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -62,14 +62,28 @@ jobs:
         run: |
           pyinstaller --noconfirm --windowed --icon icon.icns --add-data "icon.icns:." --name "Download Video Mixer" app.py
 
-      - name: Create ZIP archive (macOS)
+      - name: Create DMG (macOS)
         run: |
-          cd dist
-          zip -r "Download Video Mixer-macOS.zip" "Download Video Mixer.app"
+          rm -rf "dmg"
+          mkdir -p "dmg"
 
-      - name: Upload macOS ZIP
+          # Копируем .app в корень будущего DMG
+          cp -R "dist/Download Video Mixer.app" "dmg/Download Video Mixer.app"
+
+          # Создаём стандартную ссылку на /Applications
+          ln -s /Applications "dmg/Applications"
+
+          # Создаём DMG с .app и ссылкой Applications
+          hdiutil create \
+            -volname "Download Video Mixer" \
+            -srcfolder "dmg" \
+            -ov \
+            -format UDZO \
+            "dist/Download Video Mixer-macOS.dmg"
+
+      - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
           name: Download-Video-Mixer-macOS
-          path: "dist/Download Video Mixer-macOS.zip"
+          path: "dist/Download Video Mixer-macOS.dmg"
           if-no-files-found: error
