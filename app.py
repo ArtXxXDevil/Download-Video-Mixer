@@ -8,6 +8,7 @@ import json
 import platform
 import urllib.request
 import zipfile
+import tarfile
 import stat
 import shutil
 import ssl
@@ -29,7 +30,7 @@ class SettingsManager:
         defaults = {
             "add_translation": False,
             "show_manual_audio": False,
-            "voice_mode": "lively", # Живые голоса по умолчанию работают в JS!
+            "voice_mode": "lively", 
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": ""
@@ -372,14 +373,14 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v4.0 (JS Core / No Tokens)")
+        self.title("Download Video Mixer v4.1 (100% Portable / Live JS Core)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
         self.stop_requested = False
         self.is_downloading = False
         self.queue_items = [] 
-        self.vot_path = None # Путь к JS CLI
+        self.vot_path = None
         
         def resource_path(relative_path):
             try: base_path = sys._MEIPASS
@@ -396,11 +397,23 @@ class VideoApp(ctk.CTk):
         self.geometry("850x650")
         self.settings = SettingsManager.load()
         
+        # Настраиваем автономный Node.js
+        self.node_version = "v20.18.0"
+        self.node_dir = os.path.join(APP_DIR, "node_env")
+        
         if self.os_name == "Windows":
+            self.node_exe = os.path.join(self.node_dir, f"node-{self.node_version}-win-x64", "node.exe")
+            self.npm_cmd = os.path.join(self.node_dir, f"node-{self.node_version}-win-x64", "npm.cmd")
+            self.node_url = f"https://nodejs.org/dist/{self.node_version}/node-{self.node_version}-win-x64.zip"
+            
             self.ffmpeg_exe_name = "ffmpeg.exe"
             self.ytdlp_exe_name = "yt-dlp.exe"
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
         else:
+            self.node_exe = os.path.join(self.node_dir, f"node-{self.node_version}-darwin-x64", "bin", "node")
+            self.npm_cmd = os.path.join(self.node_dir, f"node-{self.node_version}-darwin-x64", "bin", "npm")
+            self.node_url = f"https://nodejs.org/dist/{self.node_version}/node-{self.node_version}-darwin-x64.tar.gz"
+            
             self.ffmpeg_exe_name = "ffmpeg"
             self.ytdlp_exe_name = "yt-dlp"
             self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
@@ -695,7 +708,6 @@ class VideoApp(ctk.CTk):
                     
                     translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
                     
-                    # Использование новой JS утилиты
                     cmd_vot = [
                         self.vot_path, 
                         f"--output={self.settings['save_path']}",
@@ -711,7 +723,11 @@ class VideoApp(ctk.CTk):
                         
                     kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                     
-                    process_vot = subprocess.Popen(cmd_vot, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
+                    # Подкладываем локальный Node.js в системный PATH только для этого процесса
+                    env = os.environ.copy()
+                    env["PATH"] = os.path.dirname(self.node_exe) + os.pathsep + env.get("PATH", "")
+                    
+                    process_vot = subprocess.Popen(cmd_vot, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
                     
                     for line in process_vot.stdout:
                         if getattr(self, 'stop_requested', False):
@@ -893,15 +909,36 @@ class VideoApp(ctk.CTk):
         ctx.verify_mode = ssl.CERT_NONE
         headers = {'User-Agent': 'Mozilla/5.0'}
 
-        # Проверка обязательных модулей Node.js
-        node_path = shutil.which("node")
-        npm_path = shutil.which("npm")
-        
-        if not node_path or not npm_path:
-            self.after(0, lambda: messagebox.showerror("Необходим Node.js", "Для работы JS-версии Яндекс.Переводчика (с поддержкой живых голосов) требуется Node.js.\n\nПожалуйста, скачайте и установите его с официального сайта: https://nodejs.org/\n\nПосле установки ОБЯЗАТЕЛЬНО перезагрузите компьютер!"))
-            self.after(0, lambda: self.status_label.configure(text="❌ Ошибка: Установите Node.js", text_color="red"))
-            return
+        # 1. Скачивание и настройка портативного Node.js
+        if not os.path.exists(self.node_exe):
+            self.after(0, lambda: self.status_label.configure(text="Скачивание автономного Node.js (≈30MB)...", text_color="orange"))
+            try:
+                os.makedirs(self.node_dir, exist_ok=True)
+                archive_path = os.path.join(APP_DIR, "node_temp.zip" if self.os_name == "Windows" else "node_temp.tar.gz")
+                req = urllib.request.Request(self.node_url, headers=headers)
+                with urllib.request.urlopen(req, context=ctx) as response, open(archive_path, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+                    
+                self.after(0, lambda: self.status_label.configure(text="Распаковка Node.js...", text_color="orange"))
+                if self.os_name == "Windows":
+                    with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                        zip_ref.extractall(self.node_dir)
+                else:
+                    with tarfile.open(archive_path, 'r:gz') as tar_ref:
+                        tar_ref.extractall(self.node_dir)
+                        
+                if os.path.exists(archive_path):
+                    os.remove(archive_path)
+                    
+                if self.os_name != "Windows":
+                    os.chmod(self.node_exe, os.stat(self.node_exe).st_mode | stat.S_IEXEC)
+                    os.chmod(self.npm_cmd, os.stat(self.npm_cmd).st_mode | stat.S_IEXEC)
+            except Exception as e:
+                self.after(0, lambda: self.status_label.configure(text="❌ Ошибка скачивания Node.js", text_color="red"))
+                print(f"Error downloading Node: {e}")
+                return
 
+        # 2. Скачивание базовых утилит
         dependencies = [
             (self.ytdlp_path, self.ytdlp_url, "yt-dlp"),
             (self.ffmpeg_path, None, "FFmpeg")
@@ -935,7 +972,7 @@ class VideoApp(ctk.CTk):
                     print(f"Error downloading {name}: {e}")
                     return
 
-        # Установка vot-cli-live через NPM напрямую из GitHub
+        # 3. Установка vot-cli-live через локальный NPM напрямую из GitHub
         bin_dir = os.path.join(APP_DIR, "node_modules", ".bin")
         possible_bins = ["vot-cli-live.cmd", "vot-cli-live", "vot-cli.cmd", "vot-cli"]
         
@@ -950,7 +987,12 @@ class VideoApp(ctk.CTk):
             self.after(0, lambda: self.status_label.configure(text="Установка JS-версии vot-cli...", text_color="orange"))
             try:
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                subprocess.run([npm_path, "install", "github:fantomcheg/vot-cli-live", "--no-save", "--prefix", APP_DIR], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+                
+                # Подставляем локальный Node.js в переменные среды для установки пакета
+                env = os.environ.copy()
+                env["PATH"] = os.path.dirname(self.node_exe) + os.pathsep + env.get("PATH", "")
+                
+                subprocess.run([self.npm_cmd, "install", "github:fantomcheg/vot-cli-live", "--no-save", "--prefix", APP_DIR], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
                 
                 for b in possible_bins:
                     p = os.path.join(bin_dir, b)
