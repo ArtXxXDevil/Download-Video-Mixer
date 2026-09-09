@@ -18,9 +18,11 @@ import time
 import traceback
 from datetime import datetime
 
-# Оставляем системный путь для всех ОС
 if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
+    if platform.system() == "Darwin":
+        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
+    else:
+        BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -71,7 +73,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 500  # Увеличена высота, чтобы UI не сплющивало
+        window_height = 420
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -203,13 +205,14 @@ class QueueItemWidget(ctk.CTkFrame):
     def __init__(self, master, app, video_info, mode, global_res_str):
         super().__init__(master)
         self.app = app
+        self.video_info = video_info
         self.video_id = video_info.get('id', '')
         self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
         self.title_text = video_info.get('title', 'Видео')
         self.mode = mode
         self.status = "waiting" 
         
-        self.use_yandex_translation = False
+        self.use_yandex_translation = self.app.settings.get("add_translation", False)
         self.manual_audio_path = None
         
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -319,7 +322,6 @@ class QueueItemWidget(ctk.CTkFrame):
         if global_trans:
             if not self.btn_yandex.winfo_ismapped():
                 self.btn_yandex.pack(side="left", padx=5)
-            # Включаем принудительно, если была нажата кнопка в настройках или при инициализации
             if is_refresh:
                 self.use_yandex_translation = True
                 self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
@@ -386,7 +388,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v4.3 (Smart Polling Core)")
+        self.title("Download Video Mixer v4.5 (Smart UI & Total Progress)")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -703,13 +705,28 @@ class VideoApp(ctk.CTk):
                 self.download_item(item)
                 
         self.after(0, self.restore_ui_state)
+
+    def prepare_download_environment(self):
+        save_dir = self.settings.get("save_path", "")
+        if not save_dir or not os.path.exists(save_dir):
+            return
+        for ext in ['mp4', 'm4a', 'mp3', 'webm', 'part', 'ytdl']:
+            try:
+                os.remove(os.path.join(save_dir, f"temp_v.{ext}"))
+            except:
+                pass
         
     def download_item(self, item):
         process = None
+        process_vot = None
+        process_ff = None
         actual_translation_path = None
         vot_log_output = []
+        
+        self.prepare_download_environment()
+        
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА С УМНЫМ ЦИКЛОМ ОЖИДАНИЯ
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (JS NODE CLI) С КОРОТКИМ ЦИКЛОМ (3 попытки по 15 сек)
             if item.mode == "Видео":
                 if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
                     actual_translation_path = item.manual_audio_path
@@ -733,9 +750,7 @@ class VideoApp(ctk.CTk):
                     env = os.environ.copy()
                     env["PATH"] = os.path.dirname(self.node_exe) + os.pathsep + env.get("PATH", "")
                     
-                    max_attempts = 10 # 5 минут максимум (10 попыток по 30 сек)
-                    vot_success = False
-                    
+                    max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         if getattr(self, 'stop_requested', False):
                             raise Exception("Остановлено")
@@ -765,21 +780,20 @@ class VideoApp(ctk.CTk):
                         
                         if os.path.exists(translate_temp):
                             actual_translation_path = translate_temp
-                            vot_success = True
                             break
                         else:
                             if attempt < max_attempts:
-                                self.after(0, lambda: item.set_status("Яндекс просит подождать... Пауза 30 сек...", "purple"))
-                                for _ in range(30):
+                                self.after(0, lambda: item.set_status("Яндекс просит подождать... Пауза 15 сек...", "purple"))
+                                for _ in range(15):
                                     if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
                                     time.sleep(1)
                             else:
-                                raise Exception("Ошибка: сервер Яндекса не отдал файл перевода за 5 минут")
+                                raise Exception("Сервер Яндекса не отдал файл перевода")
 
             # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
             item.status = "downloading"
             self.after(0, lambda: item.set_progress_mode("determinate"))
-            self.after(0, lambda: item.set_status("Скачивание видео...", "blue"))
+            self.after(0, lambda: item.set_status("Скачивание оригинала (yt-dlp)...", "blue"))
             
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
@@ -809,7 +823,7 @@ class VideoApp(ctk.CTk):
             if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
                 if is_audio:
                     cmd = [
-                        self.ytdlp_path, '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
+                        self.ytdlp_path, '--force-overwrites', '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
                         '--audio-quality', '0', '-o', temp_template, '--newline', '--no-playlist', 
                         '--retries', '20', '--fragment-retries', '20', '--no-check-certificate',
                         '--ffmpeg-location', self.ffmpeg_path, item.url
@@ -818,7 +832,7 @@ class VideoApp(ctk.CTk):
                     MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
                     max_dim = MAX_DIMS.get(res_num, 1920)
                     cmd = [
-                        self.ytdlp_path, '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                        self.ytdlp_path, '--force-overwrites', '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
                         '-o', temp_video, '--newline', '--no-playlist', '--retries', '20', '--fragment-retries', '20',
                         '--no-check-certificate', '--ffmpeg-location', self.ffmpeg_path, item.url
                     ]
@@ -826,7 +840,9 @@ class VideoApp(ctk.CTk):
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs)
                 
-                last_percent = -1
+                yt_stage = 1
+                last_yt_percent = 0.0
+                
                 for line in process.stdout:
                     if self.stop_requested:
                         process.terminate()
@@ -835,13 +851,25 @@ class VideoApp(ctk.CTk):
                     match = re.search(r'\[download\]\s+([\d\.]+)%', line)
                     if match:
                         percent = float(match.group(1))
-                        if int(percent) > last_percent:
-                            last_percent = int(percent)
-                            self.after(0, item.update_progress, percent)
+                        
+                        if percent < 5.0 and last_yt_percent > 90.0:
+                            yt_stage = 2
+                            
+                        last_yt_percent = percent
+                        
+                        if yt_stage == 1:
+                            overall = percent * 0.5 
+                        else:
+                            overall = 50.0 + (percent * 0.3)
+                            
+                        self.after(0, item.update_progress, overall)
                             
                 process.wait()
                 if process.returncode != 0 and not self.stop_requested:
                     raise Exception("Ошибка загрузки оригинального видео")
+                    
+                if process.returncode == 0:
+                    self.after(0, item.update_progress, 80 if not is_audio else 100)
 
                 actual_temp = temp_mp3 if is_audio else temp_video
                 if os.path.exists(actual_temp):
@@ -850,10 +878,14 @@ class VideoApp(ctk.CTk):
 
             if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
 
-            # 3. СКЛЕЙКА (FFMPEG)
+            # 3. ФИНАЛЬНАЯ СКЛЕЙКА (FFMPEG) с плавным прогресс-баром
             if not is_audio and actual_translation_path:
                 item.status = "processing"
-                self.after(0, lambda: item.set_status("Склейка...", "orange"))
+                self.after(0, lambda: item.set_status("Склейка дорожек (FFmpeg)...", "orange"))
+                
+                duration = float(item.video_info.get('duration') or 0.0)
+                if duration <= 0:
+                    self.after(0, lambda: item.set_progress_mode("indeterminate"))
                 
                 v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
                 cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
@@ -861,13 +893,35 @@ class VideoApp(ctk.CTk):
                        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
                        
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                subprocess.run(cmd_ffmpeg, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+                process_ff = subprocess.Popen(cmd_ffmpeg, stderr=subprocess.PIPE, text=True, errors='ignore', **kwargs)
+                
+                for line in process_ff.stderr:
+                    if self.stop_requested:
+                        process_ff.terminate()
+                        raise Exception("Остановлено")
+                        
+                    if duration > 0:
+                        time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d+)', line)
+                        if time_match:
+                            h = float(time_match.group(1))
+                            m = float(time_match.group(2))
+                            s = float(time_match.group(3))
+                            current_sec = h * 3600 + m * 60 + s
+                            ff_percent = min((current_sec / duration) * 100.0, 100.0)
+                            overall = 80.0 + (ff_percent * 0.2)
+                            self.after(0, item.update_progress, overall)
+                            
+                process_ff.wait()
+                if duration <= 0:
+                    self.after(0, lambda: item.set_progress_mode("determinate"))
 
             item.status = "done"
             self.after(0, lambda: (item.set_status("✅ Готово", "green"), item.update_progress(100)))
             
         except Exception as e:
             if process and process.poll() is None: process.terminate() 
+            if process_vot and process_vot.poll() is None: process_vot.terminate() 
+            if process_ff and process_ff.poll() is None: process_ff.terminate() 
             
             item.status = "error"
             self.after(0, lambda: item.set_progress_mode("determinate")) 
@@ -876,11 +930,11 @@ class VideoApp(ctk.CTk):
             
             if "Остановлено" in err_msg:
                 status_msg = "⏹ Остановлено"
-            elif "Ошибка перевода" in err_msg:
-                status_msg = f"❌ Ошибка перевода (подробнее в error.log)"
+            elif "Ошибка перевода" in err_msg or "Сервер Яндекса" in err_msg:
+                status_msg = f"❌ Ошибка перевода (error.log)"
                 log_error(item.video_id, err_msg, e, " | ".join(vot_log_output[-15:]))
             else:
-                status_msg = "❌ Ошибка"
+                status_msg = "❌ Ошибка загрузки"
                 log_error(item.video_id, err_msg, e)
                 
             self.after(0, lambda text=status_msg: item.set_status(text, "red"))
