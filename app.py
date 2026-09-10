@@ -266,21 +266,37 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_percent.pack(side="right")
 
     def translate_text(self, text):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        # Попытка 1: Google Translate API
         try:
             url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
             req = urllib.request.Request(url, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
             })
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
             with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
                 translated = "".join([sentence[0] for sentence in data[0]])
                 return translated
         except Exception as e:
             log_error(self.video_id, "Ошибка перевода названия (API Google)", e)
-            return f"[Ошибка перевода: проверьте error.log] {text}"
+            
+        # Попытка 2: Резервный перевод через MyMemory API
+        try:
+            url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
+            req_fallback = urllib.request.Request(url_fallback, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                if data.get("responseData", {}).get("translatedText"):
+                    return data["responseData"]["translatedText"]
+        except Exception as e2:
+            log_error(self.video_id, "Ошибка перевода названия (API MyMemory)", e2)
+            
+        return f"[Лимит запросов к переводчикам исчерпан] {text}"
 
     def show_translation_dialog(self, event):
         dialog = ctk.CTkToplevel(self.app)
@@ -295,17 +311,17 @@ class QueueItemWidget(ctk.CTkFrame):
         orig_textbox.insert("1.0", self.title_text)
         orig_textbox.configure(state="disabled")
 
-        ctk.CTkLabel(dialog, text="Перевод (Google API):", font=("Arial", 12, "bold")).pack(pady=(0, 0), padx=10, anchor="w")
+        ctk.CTkLabel(dialog, text="Перевод:", font=("Arial", 12, "bold")).pack(pady=(0, 0), padx=10, anchor="w")
         trans_textbox = ctk.CTkTextbox(dialog, height=60, wrap="word")
         trans_textbox.pack(padx=10, pady=(2, 10), fill="x")
-        trans_textbox.insert("1.0", "Запрос к переводчику...")
+        trans_textbox.insert("1.0", "Выполнение перевода...")
         trans_textbox.configure(state="disabled")
         
         def copy_to_clip():
             text = trans_textbox.get("1.0", "end-1c")
             self.app.clipboard_clear()
             self.app.clipboard_append(text)
-            self.app.update() # Принудительное обновление интерфейса для ОС
+            self.app.update() 
             copy_btn.configure(text="✅ Скопировано в буфер", fg_color="green", hover_color="darkgreen")
             self.app.after(2000, lambda: copy_btn.configure(text="📋 Скопировать перевод", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"]) if copy_btn.winfo_exists() else None)
 
@@ -462,7 +478,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.3")
+        self.title("Download Video Mixer v3.4")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -747,7 +763,7 @@ class VideoApp(ctk.CTk):
 
     def stop_process(self):
         self.stop_requested = True
-        self.status_label.configure(text="Остановка текущей загрузки...", text_color="orange")
+        self.status_label.configure(text="Остановка теку загрузки...", text_color="orange")
         self.start_btn.configure(state="disabled")
 
     def start_queue(self):
@@ -987,7 +1003,6 @@ class VideoApp(ctk.CTk):
                 if duration <= 0:
                     self.after(0, lambda: item.set_progress_mode("determinate"))
                     
-                # Удаление оригинального видео, если включена соответствующая опция в настройках
                 if self.settings.get("delete_original", False):
                     try:
                         if os.path.exists(base_path) and os.path.exists(final_path):
