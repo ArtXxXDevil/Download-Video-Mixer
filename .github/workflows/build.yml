@@ -61,19 +61,22 @@ jobs:
       - name: Build macOS app
         run: |
           pyinstaller --noconfirm --windowed --icon icon.icns --add-data "icon.icns:." --name "Download Video Mixer" app.py
+          
+          # Принудительно возвращаем права на исполнение бинарнику внутри пакета
+          chmod +x "dist/Download Video Mixer.app/Contents/MacOS/Download Video Mixer"
 
       - name: Create DMG (macOS)
         run: |
           rm -rf "dmg"
           mkdir -p "dmg"
 
-          # Копируем .app в корень будущего DMG
-          cp -R "dist/Download Video Mixer.app" "dmg/Download Video Mixer.app"
+          # Используем ditto вместо cp -R для сохранения всех атрибутов macOS (права, симлинки)
+          ditto "dist/Download Video Mixer.app" "dmg/Download Video Mixer.app"
 
           # Создаём стандартную ссылку на /Applications
           ln -s /Applications "dmg/Applications"
 
-          # Создаём DMG с .app и ссылкой Applications
+          # Создаём DMG
           hdiutil create \
             -volname "Download Video Mixer" \
             -srcfolder "dmg" \
