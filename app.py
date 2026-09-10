@@ -7,6 +7,7 @@ import sys
 import json
 import platform
 import urllib.request
+import urllib.parse
 import zipfile
 import tarfile
 import stat
@@ -211,6 +212,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.video_id = video_info.get('id', '')
         self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
         self.title_text = video_info.get('title', 'Видео')
+        self.translated_title = None
         self.mode = mode
         self.status = "waiting" 
         
@@ -221,8 +223,13 @@ class QueueItemWidget(ctk.CTkFrame):
         top_frame.pack(fill="x", padx=5, pady=2)
         
         display_title = (self.title_text[:65] + '...') if len(self.title_text) > 65 else self.title_text
-        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"))
+        
+        # Добавлен параметр cursor="hand2" для изменения курсора при наведении
+        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"), cursor="hand2")
         self.lbl_title.pack(side="left")
+        
+        # Привязка клика к функции перевода и копирования
+        self.lbl_title.bind("<Button-1>", self.copy_translated_title)
         
         self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
         self.btn_remove.pack(side="right")
@@ -254,6 +261,37 @@ class QueueItemWidget(ctk.CTkFrame):
         
         self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
         self.lbl_percent.pack(side="right")
+
+    def translate_text(self, text):
+        try:
+            url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                translated = "".join([sentence[0] for sentence in data[0]])
+                return translated
+        except Exception:
+            return text # Возвращаем оригинал, если перевод отвалился
+
+    def copy_translated_title(self, event):
+        def fetch_and_copy():
+            self.app.status_label.configure(text="Перевод названия...", text_color="orange")
+            if not getattr(self, 'translated_title', None):
+                self.translated_title = self.translate_text(self.title_text)
+                
+            self.app.clipboard_clear()
+            self.app.clipboard_append(self.translated_title)
+            self.app.status_label.configure(text="✅ Название скопировано!", text_color="green")
+            
+            # Возвращаем стандартный статус через 3 секунды, если мы ничего больше не нажимали
+            time.sleep(3)
+            if self.app.status_label.cget("text") == "✅ Название скопировано!":
+                self.app.update_queue_status()
+
+        threading.Thread(target=fetch_and_copy, daemon=True).start()
 
     def select_manual_audio(self):
         if self.app.is_downloading: return
@@ -390,7 +428,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.0")
+        self.title("Download Video Mixer v3.1")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -726,7 +764,7 @@ class VideoApp(ctk.CTk):
         self.clean_temp_files()
         
         try:
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА (JS NODE CLI) С КОРОТКИМ ЦИКЛОМ (3 попытки по 15 сек)
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА 
             if item.mode == "Видео":
                 if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
                     actual_translation_path = item.manual_audio_path
