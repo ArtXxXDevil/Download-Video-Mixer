@@ -51,6 +51,7 @@ class SettingsManager:
         defaults = {
             "add_translation": False,
             "show_manual_audio": False,
+            "delete_original": False,
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": ""
@@ -75,7 +76,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 400 
+        window_height = 430 
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -101,6 +102,10 @@ class SettingsWindow(ctk.CTkToplevel):
         self.manual_var = ctk.BooleanVar(value=self.settings.get("show_manual_audio", False))
         self.check_manual = ctk.CTkCheckBox(self, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
         self.check_manual.pack(pady=5) 
+        
+        self.del_orig_var = ctk.BooleanVar(value=self.settings.get("delete_original", False))
+        self.check_del_orig = ctk.CTkCheckBox(self, text="Удалять оригинал видео после успешного перевода", variable=self.del_orig_var, command=self.parent.refresh_settings)
+        self.check_del_orig.pack(pady=5)
 
         ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(10, 5)) 
 
@@ -141,6 +146,7 @@ class SettingsWindow(ctk.CTkToplevel):
         new_settings = {
             "add_translation": self.trans_var.get(),
             "show_manual_audio": self.manual_var.get(),
+            "delete_original": self.del_orig_var.get(),
             "vol_original": int(self.slider_vol1.get()),
             "vol_translate": int(self.slider_vol2.get()),
             "save_path": self.path_entry.get()
@@ -226,8 +232,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"), cursor="hand2")
         self.lbl_title.pack(side="left")
         
-        # Привязка клика к функции перевода и копирования
-        self.lbl_title.bind("<Button-1>", self.copy_translated_title)
+        self.lbl_title.bind("<Button-1>", self.show_translation_dialog)
         
         self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
         self.btn_remove.pack(side="right")
@@ -275,28 +280,52 @@ class QueueItemWidget(ctk.CTkFrame):
                 return translated
         except Exception as e:
             log_error(self.video_id, "Ошибка перевода названия (API Google)", e)
-            return text
+            return f"[Ошибка перевода: проверьте error.log] {text}"
 
-    def copy_translated_title(self, event):
-        def fetch_and_copy():
-            # Меняем UI из главного потока
-            self.app.after(0, lambda: self.app.status_label.configure(text="Перевод названия...", text_color="orange"))
-            
-            # Сетевой запрос в фоне
+    def show_translation_dialog(self, event):
+        dialog = ctk.CTkToplevel(self.app)
+        dialog.title("Название видео")
+        dialog.geometry("500x290")
+        dialog.transient(self.app)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Оригинал:", font=("Arial", 12, "bold")).pack(pady=(10, 0), padx=10, anchor="w")
+        orig_textbox = ctk.CTkTextbox(dialog, height=60, wrap="word")
+        orig_textbox.pack(padx=10, pady=(2, 10), fill="x")
+        orig_textbox.insert("1.0", self.title_text)
+        orig_textbox.configure(state="disabled")
+
+        ctk.CTkLabel(dialog, text="Перевод (Google API):", font=("Arial", 12, "bold")).pack(pady=(0, 0), padx=10, anchor="w")
+        trans_textbox = ctk.CTkTextbox(dialog, height=60, wrap="word")
+        trans_textbox.pack(padx=10, pady=(2, 10), fill="x")
+        trans_textbox.insert("1.0", "Запрос к переводчику...")
+        trans_textbox.configure(state="disabled")
+        
+        def copy_to_clip():
+            text = trans_textbox.get("1.0", "end-1c")
+            self.app.clipboard_clear()
+            self.app.clipboard_append(text)
+            self.app.update() # Принудительное обновление интерфейса для ОС
+            copy_btn.configure(text="✅ Скопировано в буфер", fg_color="green", hover_color="darkgreen")
+            self.app.after(2000, lambda: copy_btn.configure(text="📋 Скопировать перевод", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"]) if copy_btn.winfo_exists() else None)
+
+        copy_btn = ctk.CTkButton(dialog, text="📋 Скопировать перевод", command=copy_to_clip)
+        copy_btn.pack(pady=(0, 10))
+
+        def fetch_translation():
             if not getattr(self, 'translated_title', None):
                 self.translated_title = self.translate_text(self.title_text)
-                
-            # Копирование в буфер строго из главного потока
-            def update_ui():
-                self.app.clipboard_clear()
-                self.app.clipboard_append(self.translated_title)
-                self.app.update() # Принудительное обновление интерфейса (критично для буфера обмена)
-                self.app.status_label.configure(text="✅ Название скопировано!", text_color="green")
-                self.app.after(3000, lambda: self.app.update_queue_status() if self.app.status_label.cget("text") == "✅ Название скопировано!" else None)
+            
+            def update_text():
+                if trans_textbox.winfo_exists():
+                    trans_textbox.configure(state="normal")
+                    trans_textbox.delete("1.0", "end")
+                    trans_textbox.insert("1.0", self.translated_title)
+                    trans_textbox.configure(state="disabled")
+            
+            self.app.after(0, update_text)
 
-            self.app.after(0, update_ui)
-
-        threading.Thread(target=fetch_and_copy, daemon=True).start()
+        threading.Thread(target=fetch_translation, daemon=True).start()
 
     def select_manual_audio(self):
         if self.app.is_downloading: return
@@ -433,7 +462,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.2")
+        self.title("Download Video Mixer v3.3")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -957,6 +986,14 @@ class VideoApp(ctk.CTk):
                 process_ff.wait()
                 if duration <= 0:
                     self.after(0, lambda: item.set_progress_mode("determinate"))
+                    
+                # Удаление оригинального видео, если включена соответствующая опция в настройках
+                if self.settings.get("delete_original", False):
+                    try:
+                        if os.path.exists(base_path) and os.path.exists(final_path):
+                            os.remove(base_path)
+                    except Exception as del_e:
+                        log_error(item.video_id, "Ошибка удаления оригинального видео", del_e)
 
             item.status = "done"
             self.after(0, lambda: (item.set_status("✅ Готово", "green"), item.update_progress(100)))
