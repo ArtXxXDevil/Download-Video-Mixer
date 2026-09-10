@@ -223,8 +223,6 @@ class QueueItemWidget(ctk.CTkFrame):
         top_frame.pack(fill="x", padx=5, pady=2)
         
         display_title = (self.title_text[:65] + '...') if len(self.title_text) > 65 else self.title_text
-        
-        # Добавлен параметр cursor="hand2" для изменения курсора при наведении
         self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"), cursor="hand2")
         self.lbl_title.pack(side="left")
         
@@ -265,7 +263,9 @@ class QueueItemWidget(ctk.CTkFrame):
     def translate_text(self, text):
         try:
             url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            })
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
@@ -273,23 +273,28 @@ class QueueItemWidget(ctk.CTkFrame):
                 data = json.loads(response.read().decode('utf-8'))
                 translated = "".join([sentence[0] for sentence in data[0]])
                 return translated
-        except Exception:
-            return text # Возвращаем оригинал, если перевод отвалился
+        except Exception as e:
+            log_error(self.video_id, "Ошибка перевода названия (API Google)", e)
+            return text
 
     def copy_translated_title(self, event):
         def fetch_and_copy():
-            self.app.status_label.configure(text="Перевод названия...", text_color="orange")
+            # Меняем UI из главного потока
+            self.app.after(0, lambda: self.app.status_label.configure(text="Перевод названия...", text_color="orange"))
+            
+            # Сетевой запрос в фоне
             if not getattr(self, 'translated_title', None):
                 self.translated_title = self.translate_text(self.title_text)
                 
-            self.app.clipboard_clear()
-            self.app.clipboard_append(self.translated_title)
-            self.app.status_label.configure(text="✅ Название скопировано!", text_color="green")
-            
-            # Возвращаем стандартный статус через 3 секунды, если мы ничего больше не нажимали
-            time.sleep(3)
-            if self.app.status_label.cget("text") == "✅ Название скопировано!":
-                self.app.update_queue_status()
+            # Копирование в буфер строго из главного потока
+            def update_ui():
+                self.app.clipboard_clear()
+                self.app.clipboard_append(self.translated_title)
+                self.app.update() # Принудительное обновление интерфейса (критично для буфера обмена)
+                self.app.status_label.configure(text="✅ Название скопировано!", text_color="green")
+                self.app.after(3000, lambda: self.app.update_queue_status() if self.app.status_label.cget("text") == "✅ Название скопировано!" else None)
+
+            self.app.after(0, update_ui)
 
         threading.Thread(target=fetch_and_copy, daemon=True).start()
 
@@ -428,7 +433,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.1")
+        self.title("Download Video Mixer v3.2")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
