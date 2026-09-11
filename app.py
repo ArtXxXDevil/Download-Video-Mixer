@@ -19,7 +19,7 @@ import time
 import traceback
 from datetime import datetime
 
-# Оставляем системный путь для всех ОС
+# Оставляем системный путь. На Mac внутри .app это будет Contents/MacOS/
 if getattr(sys, 'frozen', False):
     if platform.system() == "Darwin":
         BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
@@ -48,13 +48,19 @@ def log_error(video_id, error_msg, exception=None, vot_log=None):
 class SettingsManager:
     @staticmethod
     def load():
+        default_save = os.path.join(os.path.expanduser("~"), "Downloads")
+        
         defaults = {
             "add_translation": False,
             "show_manual_audio": False,
             "delete_original": False,
+            "title_translator": "Google API", 
+            "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
+            "ai_model": "google/gemma-2-9b-it:free",
+            "ai_token": "",
             "vol_original": 15,
             "vol_translate": 100,
-            "save_path": ""
+            "save_path": default_save
         }
         if os.path.exists(SETTINGS_FILE):
             try:
@@ -75,8 +81,8 @@ class SettingsWindow(ctk.CTkToplevel):
         self.parent = parent
         self.title("Настройки")
         
-        window_width = 450
-        window_height = 430 
+        window_width = 500
+        window_height = 650 
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -93,42 +99,76 @@ class SettingsWindow(ctk.CTkToplevel):
 
         self.settings = SettingsManager.load()
 
-        ctk.CTkLabel(self, text="Параметры интерфейса и перевода", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        # Заменяем обычный фрейм на скроллируемый, чтобы UI никогда не обрезался
+        self.scroll = ctk.CTkScrollableFrame(self)
+        self.scroll.pack(fill="both", expand=True, padx=5, pady=5)
+
+        ctk.CTkLabel(self.scroll, text="Озвучка видео (Yandex)", font=("Arial", 16, "bold")).pack(pady=(10, 5))
 
         self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
-        self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.parent.refresh_settings)
+        self.check_trans = ctk.CTkCheckBox(self.scroll, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.parent.refresh_settings)
         self.check_trans.pack(pady=5) 
         
         self.manual_var = ctk.BooleanVar(value=self.settings.get("show_manual_audio", False))
-        self.check_manual = ctk.CTkCheckBox(self, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
+        self.check_manual = ctk.CTkCheckBox(self.scroll, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
         self.check_manual.pack(pady=5) 
         
         self.del_orig_var = ctk.BooleanVar(value=self.settings.get("delete_original", False))
-        self.check_del_orig = ctk.CTkCheckBox(self, text="Удалять оригинал видео после успешного перевода", variable=self.del_orig_var, command=self.parent.refresh_settings)
+        self.check_del_orig = ctk.CTkCheckBox(self.scroll, text="Удалять оригинал видео после успешного перевода", variable=self.del_orig_var, command=self.parent.refresh_settings)
         self.check_del_orig.pack(pady=5)
 
-        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(10, 5)) 
+        ctk.CTkLabel(self.scroll, text="Перевод названий (Текст)", font=("Arial", 16, "bold")).pack(pady=(20, 5))
 
-        self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
+        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Google API"))
+        self.translator_menu = ctk.CTkOptionMenu(self.scroll, values=["Google API", "MyMemory API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_fields)
+        self.translator_menu.pack(pady=5)
+
+        self.ai_frame = ctk.CTkFrame(self.scroll, fg_color="transparent")
+        
+        ctk.CTkLabel(self.ai_frame, text="Base URL:").pack(anchor="w")
+        self.ai_url = ctk.CTkEntry(self.ai_frame, width=400)
+        self.ai_url.insert(0, self.settings.get("ai_base_url", ""))
+        self.ai_url.pack(pady=(0, 5))
+        
+        ctk.CTkLabel(self.ai_frame, text="Модель (Model):").pack(anchor="w")
+        self.ai_model = ctk.CTkEntry(self.ai_frame, width=400)
+        self.ai_model.insert(0, self.settings.get("ai_model", ""))
+        self.ai_model.pack(pady=(0, 5))
+        
+        ctk.CTkLabel(self.ai_frame, text="API Token:").pack(anchor="w")
+        self.ai_token = ctk.CTkEntry(self.ai_frame, width=400, show="*")
+        self.ai_token.insert(0, self.settings.get("ai_token", ""))
+        self.ai_token.pack(pady=(0, 5))
+
+        ctk.CTkLabel(self.scroll, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(20, 5)) 
+
+        self.lbl_vol1 = ctk.CTkLabel(self.scroll, text=f"Громкость оригинала: {self.settings['vol_original']}%")
         self.lbl_vol1.pack()
-        self.slider_vol1 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
+        self.slider_vol1 = ctk.CTkSlider(self.scroll, from_=0, to=100, command=self.update_labels)
         self.slider_vol1.set(self.settings["vol_original"])
         self.slider_vol1.pack(pady=5) 
 
-        self.lbl_vol2 = ctk.CTkLabel(self, text=f"Громкость перевода: {self.settings['vol_translate']}%")
+        self.lbl_vol2 = ctk.CTkLabel(self.scroll, text=f"Громкость перевода: {self.settings['vol_translate']}%")
         self.lbl_vol2.pack()
-        self.slider_vol2 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
+        self.slider_vol2 = ctk.CTkSlider(self.scroll, from_=0, to=100, command=self.update_labels)
         self.slider_vol2.set(self.settings["vol_translate"])
         self.slider_vol2.pack(pady=5) 
 
-        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(10, 5)) 
-        self.path_entry = ctk.CTkEntry(self, width=350)
+        ctk.CTkLabel(self.scroll, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(20, 5)) 
+        self.path_entry = ctk.CTkEntry(self.scroll, width=350)
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
         
-        ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=5) 
+        ctk.CTkButton(self.scroll, text="Обзор", command=self.browse_folder).pack(pady=(5, 20)) 
 
         self.update_labels()
+        self.toggle_ai_fields()
+
+    def toggle_ai_fields(self, choice=None):
+        if self.translator_var.get() == "Нейросеть (OpenAI/OpenRouter)":
+            self.ai_frame.pack(pady=5, fill="x", padx=10)
+        else:
+            self.ai_frame.pack_forget()
 
     def update_labels(self, _=None):
         self.lbl_vol1.configure(text=f"Громкость оригинала: {int(self.slider_vol1.get())}%")
@@ -136,7 +176,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def browse_folder(self):
         current_path = self.path_entry.get()
-        initial = os.path.abspath(current_path) if current_path and os.path.exists(current_path) else BASE_DIR
+        initial = os.path.abspath(current_path) if current_path and os.path.exists(current_path) else os.path.join(os.path.expanduser("~"), "Downloads")
         path = filedialog.askdirectory(initialdir=initial)
         if path:
             self.path_entry.delete(0, "end")
@@ -147,6 +187,10 @@ class SettingsWindow(ctk.CTkToplevel):
             "add_translation": self.trans_var.get(),
             "show_manual_audio": self.manual_var.get(),
             "delete_original": self.del_orig_var.get(),
+            "title_translator": self.translator_var.get(),
+            "ai_base_url": self.ai_url.get().strip(),
+            "ai_model": self.ai_model.get().strip(),
+            "ai_token": self.ai_token.get().strip(),
             "vol_original": int(self.slider_vol1.get()),
             "vol_translate": int(self.slider_vol2.get()),
             "save_path": self.path_entry.get()
@@ -266,29 +310,58 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_percent.pack(side="right")
 
     def translate_text(self, text):
+        translator = self.app.settings.get("title_translator", "Google API")
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         
-        # Попытка 1: Google Translate API
-        try:
-            url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
-            req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-            })
-            with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                translated = "".join([sentence[0] for sentence in data[0]])
-                return translated
-        except Exception as e:
-            log_error(self.video_id, "Ошибка перевода названия (API Google)", e)
+        # --- Интеграция AI ---
+        if translator == "Нейросеть (OpenAI/OpenRouter)":
+            base_url = self.app.settings.get("ai_base_url", "")
+            model = self.app.settings.get("ai_model", "")
+            token = self.app.settings.get("ai_token", "").strip()
             
-        # Попытка 2: Резервный перевод через MyMemory API
+            if not token:
+                return "[Ошибка: Введите API Token нейросети в настройках]"
+                
+            try:
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                    "HTTP-Referer": "https://github.com",
+                    "X-Title": "Download Video Mixer"
+                }
+                data = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "You are a professional translator. Translate the given video title to Russian. Output ONLY the translated text, without quotes, explanations or original text. Retain the original punctuation and style."},
+                        {"role": "user", "content": text}
+                    ],
+                    "temperature": 0.3
+                }
+                req = urllib.request.Request(base_url, headers=headers, data=json.dumps(data).encode('utf-8'))
+                with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
+                    resp_data = json.loads(response.read().decode('utf-8'))
+                    return resp_data['choices'][0]['message']['content'].strip()
+            except Exception as e:
+                log_error(self.video_id, "Ошибка перевода (Нейросеть)", e)
+                return f"[Ошибка ИИ: проверьте error.log] {text}"
+
+        # --- Google API ---
+        if translator == "Google API":
+            try:
+                url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+                    return "".join([sentence[0] for sentence in data[0]])
+            except Exception as e:
+                log_error(self.video_id, "Ошибка перевода названия (API Google)", e)
+                
+        # --- MyMemory API (Запасной вариант или ручной выбор) ---
         try:
             url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
-            req_fallback = urllib.request.Request(url_fallback, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
+            req_fallback = urllib.request.Request(url_fallback, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
                 if data.get("responseData", {}).get("translatedText"):
@@ -478,7 +551,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.4")
+        self.title("Download Video Mixer v3.6")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -763,7 +836,7 @@ class VideoApp(ctk.CTk):
 
     def stop_process(self):
         self.stop_requested = True
-        self.status_label.configure(text="Остановка теку загрузки...", text_color="orange")
+        self.status_label.configure(text="Остановка текущей загрузки...", text_color="orange")
         self.start_btn.configure(state="disabled")
 
     def start_queue(self):
