@@ -55,7 +55,7 @@ class SettingsManager:
             "delete_original": False,
             "title_translator": "Google API", 
             "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
-            "ai_model": "microsoft/phi-3-mini-128k-instruct:free",
+            "ai_model": "openrouter/free",
             "ai_token": "",
             "vol_original": 15,
             "vol_translate": 100,
@@ -64,7 +64,12 @@ class SettingsManager:
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                    return {**defaults, **json.load(f)}
+                    loaded = json.load(f)
+                    # Автоматически обновляем старые отключенные ИИ модели на универсальный бесплатный роутер
+                    old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
+                    if loaded.get("ai_model") in old_models:
+                        loaded["ai_model"] = "openrouter/free"
+                    return {**defaults, **loaded}
             except:
                 return defaults
         return defaults
@@ -100,7 +105,7 @@ class AISettingsWindow(ctk.CTkToplevel):
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
         self.ai_model = ctk.CTkEntry(self, width=410)
-        self.ai_model.insert(0, self.settings.get("ai_model", "microsoft/phi-3-mini-128k-instruct:free"))
+        self.ai_model.insert(0, self.settings.get("ai_model", "openrouter/free"))
         self.ai_model.pack(padx=20, pady=(0, 5))
         
         ctk.CTkLabel(self, text="API Token:").pack(anchor="w", padx=20)
@@ -135,7 +140,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 530  # Увеличили высоту для обхода проблем с масштабированием Windows
+        window_height = 550  # Увеличенная высота, чтобы вместить все элементы при 125-150% масштабировании
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -355,9 +360,10 @@ class QueueItemWidget(ctk.CTkFrame):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         
+        # --- Интеграция AI ---
         if translator == "Нейросеть (OpenAI/OpenRouter)":
             base_url = self.app.settings.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions")
-            model = self.app.settings.get("ai_model", "microsoft/phi-3-mini-128k-instruct:free")
+            model = self.app.settings.get("ai_model", "openrouter/free")
             token = self.app.settings.get("ai_token", "").strip()
             
             if not token:
@@ -388,11 +394,12 @@ class QueueItemWidget(ctk.CTkFrame):
                 except:
                     err_body = str(e)
                 log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
-                return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи] {text}"
+                return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи]"
             except Exception as e:
                 log_error(self.video_id, "Ошибка перевода (Нейросеть)", e)
-                return f"[Ошибка подключения к ИИ: проверьте логи] {text}"
+                return f"[Ошибка подключения к ИИ: проверьте логи]"
 
+        # --- Google API ---
         if translator == "Google API":
             try:
                 url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
@@ -402,7 +409,7 @@ class QueueItemWidget(ctk.CTkFrame):
                     return "".join([sentence[0] for sentence in data[0]])
             except Exception as e:
                 log_error(self.video_id, "Ошибка перевода названия (API Google)", e)
-                return f"[Ошибка Google API] {text}"
+                return f"[Ошибка Google API]"
                 
         return text
 
@@ -438,7 +445,8 @@ class QueueItemWidget(ctk.CTkFrame):
         copy_btn.pack(pady=(0, 10))
 
         def fetch_translation():
-            if not getattr(self, 'translated_title', None):
+            # Если перевода еще нет или прошлая попытка выдала ошибку - пробуем заново
+            if not getattr(self, 'translated_title', None) or self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
                 self.translated_title = self.translate_text(self.title_text)
             
             def update_text():
@@ -587,7 +595,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.9")
+        self.title("Download Video Mixer v3")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
