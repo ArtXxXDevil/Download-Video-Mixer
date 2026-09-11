@@ -353,6 +353,16 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
         self.lbl_percent.pack(side="right")
 
+    def clean_ai_text(self, text):
+        # Удаляем мусор, который иногда выдают бесплатные ИИ модели
+        cleaned = text.strip()
+        cleaned = re.sub(r'^["\']|["\']$', '', cleaned) # кавычки по краям
+        if "->" in cleaned:
+            cleaned = cleaned.split("->")[-1].strip()
+        if "Перевод:" in cleaned:
+            cleaned = cleaned.split("Перевод:")[-1].strip()
+        return cleaned
+
     def translate_text(self, text):
         translator = self.app.settings.get("title_translator", "Google API")
         ctx = ssl.create_default_context()
@@ -376,49 +386,61 @@ class QueueItemWidget(ctk.CTkFrame):
             data = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": "You are a professional translator. Translate the given video title to Russian. Output ONLY the translated text, without quotes, explanations or original text. Retain the original punctuation and style."},
-                    {"role": "user", "content": text}
+                    {"role": "system", "content": "You are a raw text translator. Output ONLY the Russian translation. NEVER include the original text, prefixes, or explanations."},
+                    {"role": "user", "content": f"Translate to Russian:\n{text}"}
                 ],
-                "temperature": 0.3
+                "temperature": 0.1
             }
             req = urllib.request.Request(base_url, headers=headers, data=json.dumps(data).encode('utf-8'))
             
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    with urllib.request.urlopen(req, context=ctx, timeout=20) as response:
+                    with urllib.request.urlopen(req, context=ctx, timeout=12) as response:
                         resp_data = json.loads(response.read().decode('utf-8'))
-                        return resp_data['choices'][0]['message']['content'].strip()
+                        raw_translation = resp_data['choices'][0]['message']['content']
+                        return self.clean_ai_text(raw_translation)
                 except urllib.error.HTTPError as e:
-                    try:
-                        err_body = e.read().decode('utf-8')
-                    except:
-                        err_body = str(e)
+                    try: err_body = e.read().decode('utf-8')
+                    except: err_body = str(e)
                     log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
-                    # Если ошибка критичная (неверный токен или модель) - нет смысла повторять
                     if e.code in [401, 403, 404]:
                         return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи]"
-                    time.sleep(2) # При 429 или 500 пробуем еще раз
+                    time.sleep(1)
                 except Exception as e:
                     if attempt == max_retries - 1:
                         log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть, {max_retries} попыток)", e)
                         return f"[Ошибка сети: проверьте подключение к OpenRouter]"
-                    time.sleep(2)
+                    time.sleep(1)
 
         if translator == "Google API":
-            max_retries = 3
+            max_retries = 2
             for attempt in range(max_retries):
                 try:
                     url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
                     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, context=ctx, timeout=10) as response:
+                    with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                         data = json.loads(response.read().decode('utf-8'))
                         return "".join([sentence[0] for sentence in data[0]])
+                except urllib.error.HTTPError as e:
+                    if e.code == 429: # Google заблокировал IP за спам
+                        break
+                    time.sleep(1)
                 except Exception as e:
-                    if attempt == max_retries - 1:
-                        log_error(self.video_id, f"Ошибка перевода названия (API Google, {max_retries} попыток)", e)
-                        return f"[Ошибка Google API: Сеть или блокировка]"
-                    time.sleep(2)
+                    time.sleep(1)
+            
+            # Скрытый (тихий) резерв через MyMemory, если Google отвалился по 429 или таймауту
+            try:
+                url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
+                req_fallback = urllib.request.Request(url_fallback, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+                    if data.get("responseData", {}).get("translatedText"):
+                        return data["responseData"]["translatedText"]
+            except Exception as e2:
+                log_error(self.video_id, "Ошибка скрытого резервного перевода (API MyMemory)", e2)
+
+            return f"[Ошибка Google API: Слишком много запросов. Включите Нейросеть]"
                 
         return text
 
