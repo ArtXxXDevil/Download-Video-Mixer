@@ -65,9 +65,6 @@ class SettingsManager:
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                    old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
-                    if loaded.get("ai_model") in old_models:
-                        loaded["ai_model"] = "openrouter/free"
                     return {**defaults, **loaded}
             except:
                 return defaults
@@ -103,8 +100,18 @@ class AISettingsWindow(ctk.CTkToplevel):
         self.ai_url.pack(padx=20, pady=(0, 5))
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
-        self.ai_model = ctk.CTkEntry(self, width=410)
-        self.ai_model.insert(0, self.settings.get("ai_model", "openrouter/free"))
+        
+        # Список популярных бесплатных моделей для удобства пользователя
+        free_models = [
+            "openrouter/free",
+            "google/gemma-2-9b-it:free",
+            "meta-llama/llama-3.1-8b-instruct:free",
+            "qwen/qwen-2-7b-instruct:free",
+            "mistralai/mistral-7b-instruct:free",
+            "microsoft/phi-3-mini-128k-instruct:free"
+        ]
+        self.ai_model = ctk.CTkComboBox(self, width=410, values=free_models)
+        self.ai_model.set(self.settings.get("ai_model", "openrouter/free"))
         self.ai_model.pack(padx=20, pady=(0, 5))
         
         ctk.CTkLabel(self, text="API Token:").pack(anchor="w", padx=20)
@@ -307,6 +314,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
         self.title_text = video_info.get('title', 'Видео')
         self.translated_title = None
+        self.used_model = None  # Кэш для названия модели
         self.mode = mode
         self.status = "waiting" 
         
@@ -354,9 +362,8 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_percent.pack(side="right")
 
     def clean_ai_text(self, text):
-        # Удаляем мусор, который иногда выдают бесплатные ИИ модели
         cleaned = text.strip()
-        cleaned = re.sub(r'^["\']|["\']$', '', cleaned) # кавычки по краям
+        cleaned = re.sub(r'^["\']|["\']$', '', cleaned) 
         if "->" in cleaned:
             cleaned = cleaned.split("->")[-1].strip()
         if "Перевод:" in cleaned:
@@ -375,7 +382,7 @@ class QueueItemWidget(ctk.CTkFrame):
             token = self.app.settings.get("ai_token", "").strip()
             
             if not token:
-                return "[Ошибка: Введите API Token нейросети в Настройках API]"
+                return "[Ошибка: Введите API Token нейросети в Настройках API]", "N/A"
                 
             headers = {
                 "Content-Type": "application/json",
@@ -399,18 +406,20 @@ class QueueItemWidget(ctk.CTkFrame):
                     with urllib.request.urlopen(req, context=ctx, timeout=12) as response:
                         resp_data = json.loads(response.read().decode('utf-8'))
                         raw_translation = resp_data['choices'][0]['message']['content']
-                        return self.clean_ai_text(raw_translation)
+                        # Извлекаем фактическую модель из ответа API (если был передан openrouter/free, вернется точное имя)
+                        actual_model = resp_data.get('model', model)
+                        return self.clean_ai_text(raw_translation), actual_model
                 except urllib.error.HTTPError as e:
                     try: err_body = e.read().decode('utf-8')
                     except: err_body = str(e)
                     log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
                     if e.code in [401, 403, 404]:
-                        return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи]"
+                        return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи]", "Ошибка API"
                     time.sleep(1)
                 except Exception as e:
                     if attempt == max_retries - 1:
                         log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть, {max_retries} попыток)", e)
-                        return f"[Ошибка сети: проверьте подключение к OpenRouter]"
+                        return f"[Ошибка сети: проверьте подключение к OpenRouter]", "Ошибка Сети"
                     time.sleep(1)
 
         if translator == "Google API":
@@ -421,34 +430,33 @@ class QueueItemWidget(ctk.CTkFrame):
                     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                         data = json.loads(response.read().decode('utf-8'))
-                        return "".join([sentence[0] for sentence in data[0]])
+                        return "".join([sentence[0] for sentence in data[0]]), "Google Translate API"
                 except urllib.error.HTTPError as e:
-                    if e.code == 429: # Google заблокировал IP за спам
+                    if e.code == 429: 
                         break
                     time.sleep(1)
                 except Exception as e:
                     time.sleep(1)
             
-            # Скрытый (тихий) резерв через MyMemory, если Google отвалился по 429 или таймауту
             try:
                 url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
                 req_fallback = urllib.request.Request(url_fallback, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
                     data = json.loads(response.read().decode('utf-8'))
                     if data.get("responseData", {}).get("translatedText"):
-                        return data["responseData"]["translatedText"]
+                        return data["responseData"]["translatedText"], "MyMemory API (Резерв Google)"
             except Exception as e2:
                 log_error(self.video_id, "Ошибка скрытого резервного перевода (API MyMemory)", e2)
 
-            return f"[Ошибка Google API: Слишком много запросов. Включите Нейросеть]"
+            return f"[Ошибка Google API: Слишком много запросов. Включите Нейросеть]", "Ошибка API"
                 
-        return text
+        return text, "Без перевода"
 
     def show_translation_dialog(self, event):
         translator = self.app.settings.get("title_translator", "Google API")
         dialog = ctk.CTkToplevel(self.app)
         dialog.title(f"Название видео ({translator})")
-        dialog.geometry("500x290")
+        dialog.geometry("500x310") # Чуть увеличили высоту под новое поле
         dialog.transient(self.app)
         dialog.grab_set()
 
@@ -460,9 +468,12 @@ class QueueItemWidget(ctk.CTkFrame):
 
         ctk.CTkLabel(dialog, text="Перевод:", font=("Arial", 12, "bold")).pack(pady=(0, 0), padx=10, anchor="w")
         trans_textbox = ctk.CTkTextbox(dialog, height=60, wrap="word")
-        trans_textbox.pack(padx=10, pady=(2, 10), fill="x")
+        trans_textbox.pack(padx=10, pady=(2, 5), fill="x")
         trans_textbox.insert("1.0", "Выполнение перевода...")
         trans_textbox.configure(state="disabled")
+        
+        lbl_info = ctk.CTkLabel(dialog, text="Модель: ожидание ответа...", font=("Arial", 10), text_color="gray")
+        lbl_info.pack(pady=(0, 5), padx=10, anchor="w")
         
         def copy_to_clip():
             text = trans_textbox.get("1.0", "end-1c")
@@ -477,7 +488,7 @@ class QueueItemWidget(ctk.CTkFrame):
 
         def fetch_translation():
             if not getattr(self, 'translated_title', None) or self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
-                self.translated_title = self.translate_text(self.title_text)
+                self.translated_title, self.used_model = self.translate_text(self.title_text)
             
             def update_text():
                 if trans_textbox.winfo_exists():
@@ -485,6 +496,11 @@ class QueueItemWidget(ctk.CTkFrame):
                     trans_textbox.delete("1.0", "end")
                     trans_textbox.insert("1.0", self.translated_title)
                     trans_textbox.configure(state="disabled")
+                    
+                    if getattr(self, 'used_model', None):
+                        lbl_info.configure(text=f"Модель: {self.used_model}")
+                    else:
+                        lbl_info.configure(text="")
             
             self.app.after(0, update_text)
 
