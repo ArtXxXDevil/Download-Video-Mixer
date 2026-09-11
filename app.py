@@ -55,7 +55,7 @@ class SettingsManager:
             "delete_original": False,
             "title_translator": "Google API", 
             "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
-            "ai_model": "google/gemma-2-9b-it:free",
+            "ai_model": "meta-llama/llama-3.1-8b-instruct:free",
             "ai_token": "",
             "vol_original": 15,
             "vol_translate": 100,
@@ -78,7 +78,7 @@ class AISettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
-        self.title("Настройки Нейросети")
+        self.title("Настройка API")
         
         window_width = 450
         window_height = 280
@@ -100,7 +100,7 @@ class AISettingsWindow(ctk.CTkToplevel):
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
         self.ai_model = ctk.CTkEntry(self, width=410)
-        self.ai_model.insert(0, self.settings.get("ai_model", "google/gemma-2-9b-it:free"))
+        self.ai_model.insert(0, self.settings.get("ai_model", "meta-llama/llama-3.1-8b-instruct:free"))
         self.ai_model.pack(padx=20, pady=(0, 5))
         
         ctk.CTkLabel(self, text="API Token:").pack(anchor="w", padx=20)
@@ -115,14 +115,12 @@ class AISettingsWindow(ctk.CTkToplevel):
         ctk.CTkButton(btn_frame, text="Отмена", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
 
     def save_and_close(self):
-        # Загружаем свежие настройки, обновляем только ИИ-ключи
         current_settings = SettingsManager.load()
         current_settings["ai_base_url"] = self.ai_url.get().strip()
         current_settings["ai_model"] = self.ai_model.get().strip()
         current_settings["ai_token"] = self.ai_token.get().strip()
         SettingsManager.save(current_settings)
         
-        # Вызываем обновление, чтобы сбросился кэш перевода в главном окне
         if hasattr(self.parent, 'parent') and hasattr(self.parent.parent, 'refresh_settings'):
             self.parent.parent.refresh_settings()
         elif hasattr(self.parent, 'refresh_settings'):
@@ -137,7 +135,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 530 
+        window_height = 450 
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -170,11 +168,16 @@ class SettingsWindow(ctk.CTkToplevel):
 
         ctk.CTkLabel(self, text="Перевод названий (Текст)", font=("Arial", 16, "bold")).pack(pady=(15, 5))
 
-        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Google API"))
-        self.translator_menu = ctk.CTkOptionMenu(self, values=["Google API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
-        self.translator_menu.pack(pady=5)
+        trans_frame = ctk.CTkFrame(self, fg_color="transparent")
+        trans_frame.pack(pady=5)
 
-        self.btn_ai_settings = ctk.CTkButton(self, text="⚙ Настроить нейросеть...", fg_color="purple", hover_color="#6a0dad", command=self.open_ai_settings)
+        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Google API"))
+        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Google API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
+        self.translator_menu.pack(side="left", padx=(0, 10))
+
+        self.btn_ai_settings = ctk.CTkButton(trans_frame, text="Настройка API", width=120, command=self.open_ai_settings)
+        self.btn_ai_settings.pack(side="left")
+
         self.toggle_ai_btn()
 
         ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(15, 5)) 
@@ -202,9 +205,9 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def toggle_ai_btn(self, choice=None):
         if self.translator_var.get() == "Нейросеть (OpenAI/OpenRouter)":
-            self.btn_ai_settings.pack(pady=5)
+            self.btn_ai_settings.configure(state="normal", fg_color="purple", hover_color="#6a0dad")
         else:
-            self.btn_ai_settings.pack_forget()
+            self.btn_ai_settings.configure(state="disabled", fg_color="gray", hover_color="gray")
 
     def open_ai_settings(self):
         AISettingsWindow(self)
@@ -222,7 +225,6 @@ class SettingsWindow(ctk.CTkToplevel):
             self.path_entry.insert(0, os.path.abspath(path))
 
     def on_close(self):
-        # Загружаем свежие настройки (чтобы не затереть то, что сохранили в AISettingsWindow)
         current_settings = SettingsManager.load()
         current_settings.update({
             "add_translation": self.trans_var.get(),
@@ -356,11 +358,11 @@ class QueueItemWidget(ctk.CTkFrame):
         # --- Интеграция AI ---
         if translator == "Нейросеть (OpenAI/OpenRouter)":
             base_url = self.app.settings.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions")
-            model = self.app.settings.get("ai_model", "google/gemma-2-9b-it:free")
+            model = self.app.settings.get("ai_model", "meta-llama/llama-3.1-8b-instruct:free")
             token = self.app.settings.get("ai_token", "").strip()
             
             if not token:
-                return "[Ошибка: Введите API Token нейросети в настройках]"
+                return "[Ошибка: Введите API Token нейросети в Настройках API]"
                 
             try:
                 headers = {
@@ -587,7 +589,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.7")
+        self.title("Download Video Mixer v3.8")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -751,7 +753,7 @@ class VideoApp(ctk.CTk):
     def refresh_settings(self):
         self.settings = SettingsManager.load()
         for item in self.queue_items:
-            item.translated_title = None # Сброс кэша перевода при смене настроек
+            item.translated_title = None 
             item.update_yandex_visibility(is_refresh=True)
 
     def open_settings(self): SettingsWindow(self)
