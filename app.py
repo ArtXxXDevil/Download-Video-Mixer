@@ -65,7 +65,6 @@ class SettingsManager:
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                    # Автоматически обновляем старые отключенные ИИ модели на универсальный бесплатный роутер
                     old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
                     if loaded.get("ai_model") in old_models:
                         loaded["ai_model"] = "openrouter/free"
@@ -140,7 +139,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 550  # Увеличенная высота, чтобы вместить все элементы при 125-150% масштабировании
+        window_height = 550 
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -360,7 +359,6 @@ class QueueItemWidget(ctk.CTkFrame):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         
-        # --- Интеграция AI ---
         if translator == "Нейросеть (OpenAI/OpenRouter)":
             base_url = self.app.settings.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions")
             model = self.app.settings.get("ai_model", "openrouter/free")
@@ -369,47 +367,58 @@ class QueueItemWidget(ctk.CTkFrame):
             if not token:
                 return "[Ошибка: Введите API Token нейросети в Настройках API]"
                 
-            try:
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}",
-                    "HTTP-Referer": "https://github.com",
-                    "X-Title": "Download Video Mixer"
-                }
-                data = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are a professional translator. Translate the given video title to Russian. Output ONLY the translated text, without quotes, explanations or original text. Retain the original punctuation and style."},
-                        {"role": "user", "content": text}
-                    ],
-                    "temperature": 0.3
-                }
-                req = urllib.request.Request(base_url, headers=headers, data=json.dumps(data).encode('utf-8'))
-                with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
-                    resp_data = json.loads(response.read().decode('utf-8'))
-                    return resp_data['choices'][0]['message']['content'].strip()
-            except urllib.error.HTTPError as e:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "HTTP-Referer": "https://github.com",
+                "X-Title": "Download Video Mixer"
+            }
+            data = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a professional translator. Translate the given video title to Russian. Output ONLY the translated text, without quotes, explanations or original text. Retain the original punctuation and style."},
+                    {"role": "user", "content": text}
+                ],
+                "temperature": 0.3
+            }
+            req = urllib.request.Request(base_url, headers=headers, data=json.dumps(data).encode('utf-8'))
+            
+            max_retries = 3
+            for attempt in range(max_retries):
                 try:
-                    err_body = e.read().decode('utf-8')
-                except:
-                    err_body = str(e)
-                log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
-                return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи]"
-            except Exception as e:
-                log_error(self.video_id, "Ошибка перевода (Нейросеть)", e)
-                return f"[Ошибка подключения к ИИ: проверьте логи]"
+                    with urllib.request.urlopen(req, context=ctx, timeout=20) as response:
+                        resp_data = json.loads(response.read().decode('utf-8'))
+                        return resp_data['choices'][0]['message']['content'].strip()
+                except urllib.error.HTTPError as e:
+                    try:
+                        err_body = e.read().decode('utf-8')
+                    except:
+                        err_body = str(e)
+                    log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
+                    # Если ошибка критичная (неверный токен или модель) - нет смысла повторять
+                    if e.code in [401, 403, 404]:
+                        return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи]"
+                    time.sleep(2) # При 429 или 500 пробуем еще раз
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть, {max_retries} попыток)", e)
+                        return f"[Ошибка сети: проверьте подключение к OpenRouter]"
+                    time.sleep(2)
 
-        # --- Google API ---
         if translator == "Google API":
-            try:
-                url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
-                    data = json.loads(response.read().decode('utf-8'))
-                    return "".join([sentence[0] for sentence in data[0]])
-            except Exception as e:
-                log_error(self.video_id, "Ошибка перевода названия (API Google)", e)
-                return f"[Ошибка Google API]"
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, context=ctx, timeout=10) as response:
+                        data = json.loads(response.read().decode('utf-8'))
+                        return "".join([sentence[0] for sentence in data[0]])
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        log_error(self.video_id, f"Ошибка перевода названия (API Google, {max_retries} попыток)", e)
+                        return f"[Ошибка Google API: Сеть или блокировка]"
+                    time.sleep(2)
                 
         return text
 
@@ -445,7 +454,6 @@ class QueueItemWidget(ctk.CTkFrame):
         copy_btn.pack(pady=(0, 10))
 
         def fetch_translation():
-            # Если перевода еще нет или прошлая попытка выдала ошибку - пробуем заново
             if not getattr(self, 'translated_title', None) or self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
                 self.translated_title = self.translate_text(self.title_text)
             
