@@ -593,7 +593,6 @@ class QueueItemWidget(ctk.CTkFrame):
 
         if translator == "Google API":
             max_retries = 2
-            google_failed = False
             for attempt in range(max_retries):
                 try:
                     url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
@@ -603,25 +602,14 @@ class QueueItemWidget(ctk.CTkFrame):
                         return "".join([sentence[0] for sentence in data[0]]), "Google Translate API"
                 except urllib.error.HTTPError as e:
                     if e.code == 429: 
-                        google_failed = True
-                        break
+                        log_error(self.video_id, "Ошибка перевода названия (API Google) HTTP 429: Too Many Requests")
+                        return f"[Ошибка Google API: Лимит запросов. Смените переводчик]", "Ошибка API"
                     time.sleep(1)
                 except Exception as e:
                     time.sleep(1)
                     if attempt == max_retries - 1:
-                        google_failed = True
-            
-            if google_failed:
-                try:
-                    url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
-                    req_fallback = urllib.request.Request(url_fallback, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
-                        data = json.loads(response.read().decode('utf-8'))
-                        if data.get("responseData", {}).get("translatedText"):
-                            return data["responseData"]["translatedText"], "MyMemory API (Google недоступен)"
-                except Exception as e2:
-                    log_error(self.video_id, "Ошибка скрытого резервного перевода (API MyMemory)", e2)
-                return f"[Ошибка Google API: Слишком много запросов. Включите Нейросеть]", "Ошибка API"
+                        log_error(self.video_id, f"Ошибка перевода названия (API Google, {max_retries} попыток)")
+                        return f"[Ошибка Google API: Сбой подключения]", "Ошибка API"
                 
         if translator == "MyMemory API":
             try:
@@ -1112,19 +1100,16 @@ class VideoApp(ctk.CTk):
                 if res.returncode == 0:
                     info = json.loads(res.stdout.splitlines()[0]) 
                     formats = info.get('formats', [])
-                    max_res = 0
+                    max_h = 0
                     for f in formats:
-                        vcodec = f.get('vcodec')
-                        if vcodec and vcodec != 'none':
-                            w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
-                            if w > 0 and h > 0:
-                                dim = min(w, h)
-                                if dim > max_res: max_res = dim
+                        w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
+                        dim = max(w, h)
+                        if dim > max_h: max_h = dim
                     
-                    if max_res >= 2160: max_val = 2160
-                    elif max_res >= 1080: max_val = 1080
-                    elif max_res >= 720: max_val = 720
-                    elif max_res >= 480: max_val = 480
+                    if max_h >= 2160: max_val = 2160
+                    elif max_h >= 1080: max_val = 1080
+                    elif max_h >= 720: max_val = 720
+                    elif max_h >= 480: max_val = 480
                     else: max_val = 360
                 else:
                     max_val = 1080 
@@ -1266,6 +1251,7 @@ class VideoApp(ctk.CTk):
         self.clean_temp_files()
         
         try:
+            # Инициализация переменных путей в самом начале, чтобы избежать NameError при раннем падении
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
             res_raw = item.item_res_var.get()
