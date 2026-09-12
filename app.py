@@ -40,7 +40,7 @@ def log_error(video_id, error_msg, exception=None, vot_log=None):
             f.write(f"Ошибка: {error_msg}\n")
             if vot_log:
                 f.write(f"Консоль VOT: {vot_log}\n")
-            if exception:
+            if exception and "urllib.error.URLError" not in str(type(exception)):
                 f.write(traceback.format_exc())
     except:
         pass
@@ -559,6 +559,11 @@ class QueueItemWidget(ctk.CTkFrame):
                             
                         return self.clean_ai_text(raw_translation), actual_model
                         
+                except urllib.error.URLError as e:
+                    if attempt == max_retries - 1:
+                        log_error(self.video_id, f"Сетевая ошибка URLError (Нейросеть): {e.reason}")
+                        return f"[Ошибка сети: ИИ недоступен (возможна блокировка)]", "Ошибка Сети"
+                    time.sleep(1)
                 except urllib.error.HTTPError as e:
                     if e.code in [404, 429, 502, 500] and request_model != "openrouter/free":
                         request_model = "openrouter/free"
@@ -569,12 +574,11 @@ class QueueItemWidget(ctk.CTkFrame):
                     else:
                         try: err_body = e.read().decode('utf-8')
                         except: err_body = str(e)
-                        log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
+                        log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}")
                         time.sleep(1)
                 except Exception as e:
                     if attempt == max_retries - 1:
-                        err_details = traceback.format_exc()
-                        log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть, {max_retries} попыток):\n{err_details}", e)
+                        log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть): {e}")
                         return f"[Ошибка сети: проверьте подключение к ИИ]", "Ошибка Сети"
                     time.sleep(1)
                     
@@ -694,13 +698,10 @@ class QueueItemWidget(ctk.CTkFrame):
             def use_another_model():
                 global_model = self.app.settings.get("ai_model", "openrouter/free")
                 
-                # Если предыдущий перевод был успешным и мы сознательно меняем модель
                 if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model:
-                    # Если модель видео отличается от глобальной - просто форсируем глобальную без ЧС
                     if self.used_model != global_model and global_model != "openrouter/free":
                         self.force_free_model = False
                     else:
-                        # Иначе закидываем в ЧС и крутим рулетку
                         if self.used_model != "openrouter/free":
                             bl = self.app.settings.get("blacklisted_models", [])
                             if self.used_model not in bl:
@@ -709,7 +710,6 @@ class QueueItemWidget(ctk.CTkFrame):
                                 SettingsManager.save(self.app.settings)
                         self.force_free_model = True
                 else:
-                    # Если была ошибка - просто пробуем рулетку еще раз
                     self.force_free_model = True
                 
                 self.translated_title = None
@@ -1112,18 +1112,19 @@ class VideoApp(ctk.CTk):
                 if res.returncode == 0:
                     info = json.loads(res.stdout.splitlines()[0]) 
                     formats = info.get('formats', [])
-                    max_h = 0
+                    max_res = 0
                     for f in formats:
                         vcodec = f.get('vcodec')
                         if vcodec and vcodec != 'none':
                             w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
-                            dim = max(w, h)
-                            if dim > max_h: max_h = dim
+                            if w > 0 and h > 0:
+                                dim = min(w, h)
+                                if dim > max_res: max_res = dim
                     
-                    if max_h >= 2160: max_val = 2160
-                    elif max_h >= 1080: max_val = 1080
-                    elif max_h >= 720: max_val = 720
-                    elif max_h >= 480: max_val = 480
+                    if max_res >= 2160: max_val = 2160
+                    elif max_res >= 1080: max_val = 1080
+                    elif max_res >= 720: max_val = 720
+                    elif max_res >= 480: max_val = 480
                     else: max_val = 360
                 else:
                     max_val = 1080 
@@ -1265,7 +1266,6 @@ class VideoApp(ctk.CTk):
         self.clean_temp_files()
         
         try:
-            # --- РАННЯЯ ПРОВЕРКА СУЩЕСТВОВАНИЯ ИТОГОВОГО ФАЙЛА ---
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
             res_raw = item.item_res_var.get()
@@ -1288,6 +1288,7 @@ class VideoApp(ctk.CTk):
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
 
+            # --- РАННЯЯ ПРОВЕРКА СУЩЕСТВОВАНИЯ ИТОГОВОГО ФАЙЛА ---
             if os.path.exists(final_path):
                 item.status = "done"
                 self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
