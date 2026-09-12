@@ -429,7 +429,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.title_text = video_info.get('title', 'Видео')
         self.translated_title = None
         self.used_model = None  
-        self.used_translator = None # Кэш выбранного движка для умного сброса
+        self.used_translator = None 
         self.force_free_model = False 
         self.mode = mode
         self.status = "waiting" 
@@ -560,7 +560,7 @@ class QueueItemWidget(ctk.CTkFrame):
                         return self.clean_ai_text(raw_translation), actual_model
                         
                 except urllib.error.HTTPError as e:
-                    if e.code in [404] and request_model != "openrouter/free":
+                    if e.code in [404, 429, 502, 500] and request_model != "openrouter/free":
                         request_model = "openrouter/free"
                         time.sleep(1)
                         continue
@@ -575,8 +575,15 @@ class QueueItemWidget(ctk.CTkFrame):
                     if attempt == max_retries - 1:
                         err_details = traceback.format_exc()
                         log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть, {max_retries} попыток):\n{err_details}", e)
-                        return f"[Ошибка сети: проверьте подключение к OpenRouter]", "Ошибка Сети"
+                        return f"[Ошибка сети: проверьте подключение к ИИ]", "Ошибка Сети"
                     time.sleep(1)
+                    
+                available = [m for m in free_models_fallback if m not in blacklist and m != request_model]
+                if available:
+                    request_model = available[attempt % len(available)]
+                else:
+                    request_model = "openrouter/free"
+                time.sleep(1)
                     
             return f"[Ошибка подключения к ИИ или все модели недоступны]", "Ошибка API"
 
@@ -685,14 +692,26 @@ class QueueItemWidget(ctk.CTkFrame):
         another_btn = None
         if current_translator == "Нейросеть (OpenAI/OpenRouter)":
             def use_another_model():
-                if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model and self.used_model != "openrouter/free":
-                    bl = self.app.settings.get("blacklisted_models", [])
-                    if self.used_model not in bl:
-                        bl.append(self.used_model)
-                        self.app.settings["blacklisted_models"] = bl
-                        SettingsManager.save(self.app.settings)
+                global_model = self.app.settings.get("ai_model", "openrouter/free")
                 
-                self.force_free_model = True
+                # Если предыдущий перевод был успешным и мы сознательно меняем модель
+                if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model:
+                    # Если модель видео отличается от глобальной - просто форсируем глобальную без ЧС
+                    if self.used_model != global_model and global_model != "openrouter/free":
+                        self.force_free_model = False
+                    else:
+                        # Иначе закидываем в ЧС и крутим рулетку
+                        if self.used_model != "openrouter/free":
+                            bl = self.app.settings.get("blacklisted_models", [])
+                            if self.used_model not in bl:
+                                bl.append(self.used_model)
+                                self.app.settings["blacklisted_models"] = bl
+                                SettingsManager.save(self.app.settings)
+                        self.force_free_model = True
+                else:
+                    # Если была ошибка - просто пробуем рулетку еще раз
+                    self.force_free_model = True
+                
                 self.translated_title = None
                 self.used_model = None
                 self.used_translator = None
@@ -713,7 +732,6 @@ class QueueItemWidget(ctk.CTkFrame):
             blacklist = self.app.settings.get("blacklisted_models", [])
             needs_translation = False
             
-            # Умный сброс кэша, если изменились глобальные настройки перевода или если модель улетела в черный список
             if not getattr(self, 'translated_title', None):
                 needs_translation = True
             elif self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
@@ -1096,9 +1114,11 @@ class VideoApp(ctk.CTk):
                     formats = info.get('formats', [])
                     max_h = 0
                     for f in formats:
-                        w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
-                        dim = max(w, h)
-                        if dim > max_h: max_h = dim
+                        vcodec = f.get('vcodec')
+                        if vcodec and vcodec != 'none':
+                            w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
+                            dim = max(w, h)
+                            if dim > max_h: max_h = dim
                     
                     if max_h >= 2160: max_val = 2160
                     elif max_h >= 1080: max_val = 1080
@@ -1263,6 +1283,10 @@ class VideoApp(ctk.CTk):
                     
             base_path = os.path.join(self.settings["save_path"], base_name)
             final_path = os.path.join(self.settings["save_path"], final_name)
+
+            temp_template = os.path.join(self.settings["save_path"], "temp_v.%(ext)s")
+            temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
+            temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
 
             if os.path.exists(final_path):
                 item.status = "done"
@@ -1479,17 +1503,16 @@ class VideoApp(ctk.CTk):
         self.start_btn.configure(text="▶ Запустить очередь", command=self.start_queue, fg_color="green", hover_color="darkgreen", state="normal")
         
         done = sum(1 for i in self.queue_items if i.status == "done")
+        errors = sum(1 for i in self.queue_items if i.status == "error")
         total = len(self.queue_items)
         
         if self.stop_requested:
             self.status_label.configure(text=f"Очередь остановлена. Завершено: {done}/{total}", text_color="orange")
-        elif done == total and total > 0:
+        elif errors > 0:
+            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}", text_color="red")
+        else:
             self.status_label.configure(text="🎉 Все загрузки успешно завершены!", text_color="green")
             if getattr(self, 'actual_downloads_occurred', False):
-                self.open_save_folder()
-        else:
-            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}", text_color="red")
-            if done > 0 and getattr(self, 'actual_downloads_occurred', False):
                 self.open_save_folder()
             
         self.toggle_ui("normal")
