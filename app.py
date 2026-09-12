@@ -57,6 +57,7 @@ class SettingsManager:
             "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
             "ai_model": "openrouter/free",
             "ai_token": "",
+            "discovered_models": [], # Храним найденные бесплатные модели
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": default_save
@@ -65,6 +66,9 @@ class SettingsManager:
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
+                    old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
+                    if loaded.get("ai_model") in old_models:
+                        loaded["ai_model"] = "openrouter/free"
                     return {**defaults, **loaded}
             except:
                 return defaults
@@ -101,7 +105,7 @@ class AISettingsWindow(ctk.CTkToplevel):
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
         
-        # Список популярных бесплатных моделей для удобства пользователя
+        # Собираем список моделей: база + то, что нашел сам ИИ
         free_models = [
             "openrouter/free",
             "google/gemma-2-9b-it:free",
@@ -110,6 +114,11 @@ class AISettingsWindow(ctk.CTkToplevel):
             "mistralai/mistral-7b-instruct:free",
             "microsoft/phi-3-mini-128k-instruct:free"
         ]
+        saved_discovered = self.settings.get("discovered_models", [])
+        for m in saved_discovered:
+            if m not in free_models:
+                free_models.append(m)
+                
         self.ai_model = ctk.CTkComboBox(self, width=410, values=free_models)
         self.ai_model.set(self.settings.get("ai_model", "openrouter/free"))
         self.ai_model.pack(padx=20, pady=(0, 5))
@@ -183,7 +192,8 @@ class SettingsWindow(ctk.CTkToplevel):
         trans_frame.pack(pady=5)
 
         self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Google API"))
-        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Google API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
+        # Возвращаем MyMemory API в список
+        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Google API", "MyMemory API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
         self.translator_menu.pack(side="left", padx=(0, 10))
 
         self.btn_ai_settings = ctk.CTkButton(trans_frame, text="Настройка API", width=120, command=self.open_ai_settings)
@@ -314,7 +324,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
         self.title_text = video_info.get('title', 'Видео')
         self.translated_title = None
-        self.used_model = None  # Кэш для названия модели
+        self.used_model = None  
         self.mode = mode
         self.status = "waiting" 
         
@@ -406,8 +416,15 @@ class QueueItemWidget(ctk.CTkFrame):
                     with urllib.request.urlopen(req, context=ctx, timeout=12) as response:
                         resp_data = json.loads(response.read().decode('utf-8'))
                         raw_translation = resp_data['choices'][0]['message']['content']
-                        # Извлекаем фактическую модель из ответа API (если был передан openrouter/free, вернется точное имя)
+                        
                         actual_model = resp_data.get('model', model)
+                        # Авто-сохранение новых моделей в базу
+                        disc = self.app.settings.get("discovered_models", [])
+                        if actual_model not in disc:
+                            disc.append(actual_model)
+                            self.app.settings["discovered_models"] = disc
+                            SettingsManager.save(self.app.settings)
+                            
                         return self.clean_ai_text(raw_translation), actual_model
                 except urllib.error.HTTPError as e:
                     try: err_body = e.read().decode('utf-8')
@@ -424,6 +441,7 @@ class QueueItemWidget(ctk.CTkFrame):
 
         if translator == "Google API":
             max_retries = 2
+            google_failed = False
             for attempt in range(max_retries):
                 try:
                     url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q={urllib.parse.quote(text)}"
@@ -433,22 +451,38 @@ class QueueItemWidget(ctk.CTkFrame):
                         return "".join([sentence[0] for sentence in data[0]]), "Google Translate API"
                 except urllib.error.HTTPError as e:
                     if e.code == 429: 
+                        google_failed = True
                         break
                     time.sleep(1)
                 except Exception as e:
                     time.sleep(1)
+                    if attempt == max_retries - 1:
+                        google_failed = True
             
+            # Скрытый (тихий) резерв через MyMemory
+            if google_failed:
+                try:
+                    url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
+                    req_fallback = urllib.request.Request(url_fallback, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
+                        data = json.loads(response.read().decode('utf-8'))
+                        if data.get("responseData", {}).get("translatedText"):
+                            return data["responseData"]["translatedText"], "MyMemory API (Google недоступен)"
+                except Exception as e2:
+                    log_error(self.video_id, "Ошибка скрытого резервного перевода (API MyMemory)", e2)
+                return f"[Ошибка Google API: Слишком много запросов. Включите Нейросеть]", "Ошибка API"
+                
+        if translator == "MyMemory API":
             try:
                 url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
                 req_fallback = urllib.request.Request(url_fallback, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
                     data = json.loads(response.read().decode('utf-8'))
                     if data.get("responseData", {}).get("translatedText"):
-                        return data["responseData"]["translatedText"], "MyMemory API (Резерв Google)"
+                        return data["responseData"]["translatedText"], "MyMemory API"
             except Exception as e2:
-                log_error(self.video_id, "Ошибка скрытого резервного перевода (API MyMemory)", e2)
-
-            return f"[Ошибка Google API: Слишком много запросов. Включите Нейросеть]", "Ошибка API"
+                log_error(self.video_id, "Ошибка перевода (API MyMemory)", e2)
+                return f"[Ошибка MyMemory API]", "Ошибка API"
                 
         return text, "Без перевода"
 
@@ -456,9 +490,28 @@ class QueueItemWidget(ctk.CTkFrame):
         translator = self.app.settings.get("title_translator", "Google API")
         dialog = ctk.CTkToplevel(self.app)
         dialog.title(f"Название видео ({translator})")
-        dialog.geometry("500x310") # Чуть увеличили высоту под новое поле
+        
+        # Центрирование окна с запоминанием последней позиции
+        dialog.withdraw() # Прячем окно до позиционирования
+        if getattr(self.app, 'translation_window_geometry', None):
+            dialog.geometry(self.app.translation_window_geometry)
+        else:
+            window_width = 500
+            window_height = 310
+            self.app.update_idletasks()
+            x = self.app.winfo_x() + (self.app.winfo_width() // 2) - (window_width // 2)
+            y = self.app.winfo_y() + (self.app.winfo_height() // 2) - (window_height // 2)
+            dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        dialog.deiconify()
+        
         dialog.transient(self.app)
         dialog.grab_set()
+
+        # Сохранение геометрии при закрытии
+        def on_dialog_close():
+            self.app.translation_window_geometry = dialog.geometry()
+            dialog.destroy()
+        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
 
         ctk.CTkLabel(dialog, text="Оригинал:", font=("Arial", 12, "bold")).pack(pady=(10, 0), padx=10, anchor="w")
         orig_textbox = ctk.CTkTextbox(dialog, height=60, wrap="word")
@@ -649,6 +702,7 @@ class VideoApp(ctk.CTk):
         self.is_downloading = False
         self.queue_items = [] 
         self.vot_path = None
+        self.translation_window_geometry = None # Храним позицию окна перевода
         
         def resource_path(relative_path):
             try: base_path = sys._MEIPASS
@@ -698,6 +752,22 @@ class VideoApp(ctk.CTk):
         self.format_fetch_queue = queue.Queue()
         threading.Thread(target=self.check_dependencies, daemon=True).start()
         threading.Thread(target=self.format_fetch_worker, daemon=True).start()
+        
+        # Запуск функции авто-загрузки ссылок через полсекунды после старта UI
+        self.after(500, self.load_urls_from_file)
+
+    def load_urls_from_file(self):
+        txt_path = os.path.join(APP_DIR, "video.txt")
+        if os.path.exists(txt_path):
+            try:
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+                
+                for url in urls:
+                    threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
+                    time.sleep(0.2) # Небольшая задержка для плавности UI
+            except Exception as e:
+                print(f"Error reading video.txt: {e}")
 
     def build_ui(self):
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
