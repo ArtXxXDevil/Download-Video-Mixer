@@ -57,7 +57,8 @@ class SettingsManager:
             "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
             "ai_model": "openrouter/free",
             "ai_token": "",
-            "discovered_models": [], # Храним найденные бесплатные модели
+            "discovered_models": [],
+            "blacklisted_models": [],
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": default_save
@@ -66,9 +67,6 @@ class SettingsManager:
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                    old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
-                    if loaded.get("ai_model") in old_models:
-                        loaded["ai_model"] = "openrouter/free"
                     return {**defaults, **loaded}
             except:
                 return defaults
@@ -105,14 +103,14 @@ class AISettingsWindow(ctk.CTkToplevel):
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
         
-        # Собираем список моделей: база + то, что нашел сам ИИ
         free_models = [
             "openrouter/free",
             "google/gemma-2-9b-it:free",
             "meta-llama/llama-3.1-8b-instruct:free",
             "qwen/qwen-2-7b-instruct:free",
             "mistralai/mistral-7b-instruct:free",
-            "microsoft/phi-3-mini-128k-instruct:free"
+            "microsoft/phi-3-mini-128k-instruct:free",
+            "nvidia/nemotron-3.5-lightning:free"
         ]
         saved_discovered = self.settings.get("discovered_models", [])
         for m in saved_discovered:
@@ -128,11 +126,32 @@ class AISettingsWindow(ctk.CTkToplevel):
         self.ai_token.insert(0, self.settings.get("ai_token", ""))
         self.ai_token.pack(padx=20, pady=(0, 15))
 
+        # Добавление ПКМ контекстного меню для удобной вставки токенов
+        self.add_context_menu(self.ai_url)
+        self.add_context_menu(self.ai_token)
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=5)
         
         ctk.CTkButton(btn_frame, text="Сохранить", command=self.save_and_close, fg_color="green", hover_color="darkgreen").pack(side="left", padx=10)
         ctk.CTkButton(btn_frame, text="Отмена", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
+
+    def add_context_menu(self, widget):
+        menu = Menu(widget, tearoff=0, font=("Arial", 10))
+        def paste():
+            try:
+                widget.delete(0, "end")
+                widget.insert(0, widget.clipboard_get())
+            except: pass
+        def copy():
+            try:
+                widget.clipboard_clear()
+                widget.clipboard_append(widget.get())
+            except: pass
+        menu.add_command(label="Вставить", command=paste)
+        menu.add_command(label="Копировать", command=copy)
+        widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+        widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
     def save_and_close(self):
         current_settings = SettingsManager.load()
@@ -192,7 +211,6 @@ class SettingsWindow(ctk.CTkToplevel):
         trans_frame.pack(pady=5)
 
         self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Google API"))
-        # Возвращаем MyMemory API в список
         self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Google API", "MyMemory API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
         self.translator_menu.pack(side="left", padx=(0, 10))
 
@@ -400,44 +418,71 @@ class QueueItemWidget(ctk.CTkFrame):
                 "HTTP-Referer": "https://github.com",
                 "X-Title": "Download Video Mixer"
             }
-            data = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "You are a raw text translator. Output ONLY the Russian translation. NEVER include the original text, prefixes, or explanations."},
-                    {"role": "user", "content": f"Translate to Russian:\n{text}"}
-                ],
-                "temperature": 0.1
-            }
-            req = urllib.request.Request(base_url, headers=headers, data=json.dumps(data).encode('utf-8'))
             
-            max_retries = 3
+            blacklist = self.app.settings.get("blacklisted_models", [])
+            free_models_fallback = [
+                "google/gemma-2-9b-it:free",
+                "meta-llama/llama-3.1-8b-instruct:free",
+                "qwen/qwen-2-7b-instruct:free",
+                "mistralai/mistral-7b-instruct:free",
+                "microsoft/phi-3-mini-128k-instruct:free",
+                "nvidia/nemotron-3.5-lightning:free"
+            ]
+            
+            request_model = model
+            max_retries = 4
+            
             for attempt in range(max_retries):
+                data = {
+                    "model": request_model,
+                    "messages": [
+                        {"role": "system", "content": "You are a raw text translator. Output ONLY the Russian translation. NEVER include the original text, prefixes, or explanations."},
+                        {"role": "user", "content": f"Translate to Russian:\n{text}"}
+                    ],
+                    "temperature": 0.1
+                }
+                req = urllib.request.Request(base_url, headers=headers, data=json.dumps(data).encode('utf-8'))
+                
                 try:
                     with urllib.request.urlopen(req, context=ctx, timeout=12) as response:
                         resp_data = json.loads(response.read().decode('utf-8'))
                         raw_translation = resp_data['choices'][0]['message']['content']
                         
-                        actual_model = resp_data.get('model', model)
-                        # Авто-сохранение новых моделей в базу
+                        actual_model = resp_data.get('model', request_model)
+                        
+                        if actual_model in blacklist:
+                            if request_model == "openrouter/free":
+                                raise ValueError("Blacklisted model returned")
+                                
                         disc = self.app.settings.get("discovered_models", [])
-                        if actual_model not in disc:
+                        if actual_model not in disc and actual_model not in free_models_fallback and actual_model != "openrouter/free":
                             disc.append(actual_model)
                             self.app.settings["discovered_models"] = disc
                             SettingsManager.save(self.app.settings)
                             
                         return self.clean_ai_text(raw_translation), actual_model
                 except urllib.error.HTTPError as e:
-                    try: err_body = e.read().decode('utf-8')
-                    except: err_body = str(e)
-                    log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
-                    if e.code in [401, 403, 404]:
-                        return f"[Ошибка ИИ {e.code}: Проверьте настройки или логи]", "Ошибка API"
-                    time.sleep(1)
+                    if e.code in [404] and request_model != "openrouter/free":
+                        # Если запрошенная конкретная модель недоступна (стала платной)
+                        pass
+                    elif e.code in [401, 403]:
+                        return f"[Ошибка ИИ {e.code}: Проверьте настройки токена]", "Ошибка API"
+                    else:
+                        try: err_body = e.read().decode('utf-8')
+                        except: err_body = str(e)
+                        log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
                 except Exception as e:
-                    if attempt == max_retries - 1:
-                        log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть, {max_retries} попыток)", e)
-                        return f"[Ошибка сети: проверьте подключение к OpenRouter]", "Ошибка Сети"
-                    time.sleep(1)
+                    pass
+                
+                # Если произошла ошибка сети, 404 или вернулась модель из черного списка — переключаем fallback
+                available = [m for m in free_models_fallback if m not in blacklist and m != request_model]
+                if available:
+                    request_model = available[attempt % len(available)]
+                else:
+                    request_model = "openrouter/free"
+                time.sleep(1)
+                
+            return f"[Ошибка подключения к ИИ или все модели недоступны]", "Ошибка API"
 
         if translator == "Google API":
             max_retries = 2
@@ -459,7 +504,6 @@ class QueueItemWidget(ctk.CTkFrame):
                     if attempt == max_retries - 1:
                         google_failed = True
             
-            # Скрытый (тихий) резерв через MyMemory
             if google_failed:
                 try:
                     url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
@@ -489,38 +533,39 @@ class QueueItemWidget(ctk.CTkFrame):
     def show_translation_dialog(self, event):
         translator = self.app.settings.get("title_translator", "Google API")
         dialog = ctk.CTkToplevel(self.app)
+        
+        # Делаем окно невидимым до того как разместим по нужным координатам (устранение мерцания)
+        dialog.attributes('-alpha', 0.0)
+        
         dialog.title(f"Название видео ({translator})")
         
-        # Центрирование окна с запоминанием последней позиции
-        dialog.withdraw() # Прячем окно до позиционирования
-        if getattr(self.app, 'translation_window_geometry', None):
-            dialog.geometry(self.app.translation_window_geometry)
-        else:
-            window_width = 500
-            window_height = 310
+        window_width = 500
+        window_height = 250 
+        
+        geom = getattr(self.app, 'translation_window_geometry', None)
+        if not geom:
             self.app.update_idletasks()
             x = self.app.winfo_x() + (self.app.winfo_width() // 2) - (window_width // 2)
             y = self.app.winfo_y() + (self.app.winfo_height() // 2) - (window_height // 2)
-            dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        dialog.deiconify()
-        
+            geom = f"{window_width}x{window_height}+{x}+{y}"
+            
+        dialog.geometry(geom)
         dialog.transient(self.app)
         dialog.grab_set()
 
-        # Сохранение геометрии при закрытии
         def on_dialog_close():
             self.app.translation_window_geometry = dialog.geometry()
             dialog.destroy()
         dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
 
         ctk.CTkLabel(dialog, text="Оригинал:", font=("Arial", 12, "bold")).pack(pady=(10, 0), padx=10, anchor="w")
-        orig_textbox = ctk.CTkTextbox(dialog, height=60, wrap="word")
-        orig_textbox.pack(padx=10, pady=(2, 10), fill="x")
+        orig_textbox = ctk.CTkTextbox(dialog, height=50, wrap="word")
+        orig_textbox.pack(padx=10, pady=(2, 5), fill="x")
         orig_textbox.insert("1.0", self.title_text)
         orig_textbox.configure(state="disabled")
 
         ctk.CTkLabel(dialog, text="Перевод:", font=("Arial", 12, "bold")).pack(pady=(0, 0), padx=10, anchor="w")
-        trans_textbox = ctk.CTkTextbox(dialog, height=60, wrap="word")
+        trans_textbox = ctk.CTkTextbox(dialog, height=50, wrap="word")
         trans_textbox.pack(padx=10, pady=(2, 5), fill="x")
         trans_textbox.insert("1.0", "Выполнение перевода...")
         trans_textbox.configure(state="disabled")
@@ -528,16 +573,44 @@ class QueueItemWidget(ctk.CTkFrame):
         lbl_info = ctk.CTkLabel(dialog, text="Модель: ожидание ответа...", font=("Arial", 10), text_color="gray")
         lbl_info.pack(pady=(0, 5), padx=10, anchor="w")
         
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=(0, 5))
+        
         def copy_to_clip():
             text = trans_textbox.get("1.0", "end-1c")
             self.app.clipboard_clear()
             self.app.clipboard_append(text)
             self.app.update() 
-            copy_btn.configure(text="✅ Скопировано в буфер", fg_color="green", hover_color="darkgreen")
+            copy_btn.configure(text="✅ Скопировано", fg_color="green", hover_color="darkgreen")
             self.app.after(2000, lambda: copy_btn.configure(text="📋 Скопировать перевод", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"]) if copy_btn.winfo_exists() else None)
 
-        copy_btn = ctk.CTkButton(dialog, text="📋 Скопировать перевод", command=copy_to_clip)
-        copy_btn.pack(pady=(0, 10))
+        copy_btn = ctk.CTkButton(btn_frame, text="📋 Скопировать перевод", command=copy_to_clip)
+        copy_btn.pack(side="left", padx=5)
+        
+        another_btn = None
+        if translator == "Нейросеть (OpenAI/OpenRouter)":
+            def use_another_model():
+                if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model:
+                    bl = self.app.settings.get("blacklisted_models", [])
+                    if self.used_model not in bl:
+                        bl.append(self.used_model)
+                        self.app.settings["blacklisted_models"] = bl
+                        SettingsManager.save(self.app.settings)
+                
+                self.translated_title = None
+                self.used_model = None
+                trans_textbox.configure(state="normal")
+                trans_textbox.delete("1.0", "end")
+                trans_textbox.insert("1.0", "Выполнение перевода...")
+                trans_textbox.configure(state="disabled")
+                lbl_info.configure(text="Модель: ожидание ответа...")
+                copy_btn.configure(state="disabled")
+                another_btn.configure(state="disabled")
+                
+                threading.Thread(target=fetch_translation, daemon=True).start()
+                
+            another_btn = ctk.CTkButton(btn_frame, text="🔄 Другая модель", fg_color="purple", hover_color="#6a0dad", command=use_another_model)
+            another_btn.pack(side="left", padx=5)
 
         def fetch_translation():
             if not getattr(self, 'translated_title', None) or self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
@@ -554,10 +627,20 @@ class QueueItemWidget(ctk.CTkFrame):
                         lbl_info.configure(text=f"Модель: {self.used_model}")
                     else:
                         lbl_info.configure(text="")
+                        
+                    copy_btn.configure(state="normal")
+                    if another_btn:
+                        another_btn.configure(state="normal")
             
             self.app.after(0, update_text)
 
+        copy_btn.configure(state="disabled")
+        if another_btn:
+            another_btn.configure(state="disabled")
         threading.Thread(target=fetch_translation, daemon=True).start()
+        
+        # Проявляем окно без анимации рывка
+        dialog.after(50, lambda: dialog.attributes('-alpha', 1.0))
 
     def select_manual_audio(self):
         if self.app.is_downloading: return
@@ -702,7 +785,7 @@ class VideoApp(ctk.CTk):
         self.is_downloading = False
         self.queue_items = [] 
         self.vot_path = None
-        self.translation_window_geometry = None # Храним позицию окна перевода
+        self.translation_window_geometry = None
         
         def resource_path(relative_path):
             try: base_path = sys._MEIPASS
@@ -753,7 +836,6 @@ class VideoApp(ctk.CTk):
         threading.Thread(target=self.check_dependencies, daemon=True).start()
         threading.Thread(target=self.format_fetch_worker, daemon=True).start()
         
-        # Запуск функции авто-загрузки ссылок через полсекунды после старта UI
         self.after(500, self.load_urls_from_file)
 
     def load_urls_from_file(self):
@@ -765,7 +847,7 @@ class VideoApp(ctk.CTk):
                 
                 for url in urls:
                     threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
-                    time.sleep(0.2) # Небольшая задержка для плавности UI
+                    time.sleep(0.2) 
             except Exception as e:
                 print(f"Error reading video.txt: {e}")
 
