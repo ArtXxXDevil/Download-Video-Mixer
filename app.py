@@ -258,7 +258,8 @@ class SettingsWindow(ctk.CTkToplevel):
         trans_frame.pack(pady=5)
 
         self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Google API"))
-        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Google API", "MyMemory API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
+        # Добавлен пункт Отключено
+        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Отключено", "Google API", "MyMemory API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
         self.translator_menu.pack(side="left", padx=(0, 10))
 
         self.btn_ai_settings = ctk.CTkButton(trans_frame, text="Настройка API", width=120, command=self.open_ai_settings)
@@ -441,7 +442,10 @@ class QueueItemWidget(ctk.CTkFrame):
         top_frame.pack(fill="x", padx=5, pady=2)
         
         display_title = (self.title_text[:65] + '...') if len(self.title_text) > 65 else self.title_text
-        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"), cursor="hand2")
+        
+        translator = self.app.settings.get("title_translator", "Google API")
+        cursor_type = "hand2" if translator != "Отключено" else ""
+        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"), cursor=cursor_type)
         self.lbl_title.pack(side="left")
         
         self.lbl_title.bind("<Button-1>", self.show_translation_dialog)
@@ -476,6 +480,11 @@ class QueueItemWidget(ctk.CTkFrame):
         
         self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
         self.lbl_percent.pack(side="right")
+        
+    def update_ui_from_settings(self):
+        translator = self.app.settings.get("title_translator", "Google API")
+        self.lbl_title.configure(cursor="hand2" if translator != "Отключено" else "")
+        self.update_yandex_visibility(is_refresh=True)
 
     def clean_ai_text(self, text):
         cleaned = text.strip()
@@ -627,6 +636,10 @@ class QueueItemWidget(ctk.CTkFrame):
 
     def show_translation_dialog(self, event):
         current_translator = self.app.settings.get("title_translator", "Google API")
+        
+        if current_translator == "Отключено":
+            return
+            
         dialog = ctk.CTkToplevel(self.app)
         
         dialog.attributes('-alpha', 0.0)
@@ -1078,7 +1091,7 @@ class VideoApp(ctk.CTk):
     def refresh_settings(self):
         self.settings = SettingsManager.load()
         for item in self.queue_items:
-            item.update_yandex_visibility(is_refresh=True)
+            item.update_ui_from_settings()
 
     def open_settings(self): SettingsWindow(self)
 
@@ -1100,16 +1113,20 @@ class VideoApp(ctk.CTk):
                 if res.returncode == 0:
                     info = json.loads(res.stdout.splitlines()[0]) 
                     formats = info.get('formats', [])
-                    max_h = 0
+                    max_res = 0
                     for f in formats:
-                        w, h = f.get('width', 0) or 0, f.get('height', 0) or 0
-                        dim = max(w, h)
-                        if dim > max_h: max_h = dim
+                        vcodec = f.get('vcodec')
+                        if vcodec and vcodec != 'none':
+                            w = f.get('width', 0) or 0
+                            h = f.get('height', 0) or 0
+                            if w > 0 and h > 0:
+                                dim = min(w, h)
+                                if dim > max_res: max_res = dim
                     
-                    if max_h >= 2160: max_val = 2160
-                    elif max_h >= 1080: max_val = 1080
-                    elif max_h >= 720: max_val = 720
-                    elif max_h >= 480: max_val = 480
+                    if max_res >= 2160: max_val = 2160
+                    elif max_res >= 1080: max_val = 1080
+                    elif max_res >= 720: max_val = 720
+                    elif max_res >= 480: max_val = 480
                     else: max_val = 360
                 else:
                     max_val = 1080 
@@ -1251,7 +1268,6 @@ class VideoApp(ctk.CTk):
         self.clean_temp_files()
         
         try:
-            # Инициализация переменных путей в самом начале, чтобы избежать NameError при раннем падении
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
             res_raw = item.item_res_var.get()
@@ -1274,14 +1290,12 @@ class VideoApp(ctk.CTk):
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
             temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
 
-            # --- РАННЯЯ ПРОВЕРКА СУЩЕСТВОВАНИЯ ИТОГОВОГО ФАЙЛА ---
             if os.path.exists(final_path):
                 item.status = "done"
                 self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
                 return
                 
             self.actual_downloads_occurred = True
-            # -----------------------------------------------------
 
             # 1. СКАЧИВАНИЕ ПЕРЕВОДА 
             if item.mode == "Видео":
