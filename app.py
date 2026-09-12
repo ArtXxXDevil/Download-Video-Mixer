@@ -91,6 +91,9 @@ class SettingsManager:
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
+                    old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
+                    if loaded.get("ai_model") in old_models:
+                        loaded["ai_model"] = "openrouter/free"
                     return {**defaults, **loaded}
             except:
                 return defaults
@@ -121,6 +124,7 @@ class AISettingsWindow(ctk.CTkToplevel):
         self.grab_set()
 
         self.settings = SettingsManager.load()
+        blacklist = self.settings.get("blacklisted_models", [])
 
         ctk.CTkLabel(self, text="Base URL:").pack(anchor="w", padx=20, pady=(15, 0))
         self.ai_url = ctk.CTkEntry(self, width=410)
@@ -132,11 +136,17 @@ class AISettingsWindow(ctk.CTkToplevel):
         free_models = ["openrouter/free"]
         saved_discovered = self.settings.get("discovered_models", [])
         for m in saved_discovered:
-            if m not in free_models:
+            if m not in free_models and m not in blacklist:
                 free_models.append(m)
                 
+        current_model = self.settings.get("ai_model", "openrouter/free")
+        if current_model in blacklist:
+            current_model = "openrouter/free"
+            self.settings["ai_model"] = current_model
+            SettingsManager.save(self.settings)
+
         self.ai_model = ctk.CTkComboBox(self, width=410, values=free_models)
-        self.ai_model.set(self.settings.get("ai_model", "openrouter/free"))
+        self.ai_model.set(current_model)
         self.ai_model.pack(padx=20, pady=(0, 5))
         
         ctk.CTkLabel(self, text="API Token:").pack(anchor="w", padx=20)
@@ -168,8 +178,20 @@ class AISettingsWindow(ctk.CTkToplevel):
                 widget.clipboard_clear()
                 widget.clipboard_append(widget.get())
             except: pass
+        def cut():
+            copy()
+            try: widget.delete(0, "end")
+            except: pass
+        def select_all():
+            try:
+                widget.select_range(0, "end")
+                widget.icursor("end")
+            except: pass
+
         menu.add_command(label="Вставить", command=paste)
         menu.add_command(label="Копировать", command=copy)
+        menu.add_command(label="Вырезать", command=cut)
+        menu.add_command(label="Выделить всё", command=select_all)
         widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
         widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
@@ -263,10 +285,41 @@ class SettingsWindow(ctk.CTkToplevel):
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
         
+        self.add_context_menu(self.path_entry)
+        
         ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=(5, 10)) 
 
         self.update_labels()
         fade_in(self)
+
+    def add_context_menu(self, widget):
+        menu = Menu(widget, tearoff=0, font=("Arial", 10))
+        def paste():
+            try:
+                widget.delete(0, "end")
+                widget.insert(0, widget.clipboard_get())
+            except: pass
+        def copy():
+            try:
+                widget.clipboard_clear()
+                widget.clipboard_append(widget.get())
+            except: pass
+        def cut():
+            copy()
+            try: widget.delete(0, "end")
+            except: pass
+        def select_all():
+            try:
+                widget.select_range(0, "end")
+                widget.icursor("end")
+            except: pass
+
+        menu.add_command(label="Вставить", command=paste)
+        menu.add_command(label="Копировать", command=copy)
+        menu.add_command(label="Вырезать", command=cut)
+        menu.add_command(label="Выделить всё", command=select_all)
+        widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+        widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
     def toggle_ai_btn(self, choice=None):
         if self.translator_var.get() == "Нейросеть (OpenAI/OpenRouter)":
@@ -376,6 +429,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.title_text = video_info.get('title', 'Видео')
         self.translated_title = None
         self.used_model = None  
+        self.used_translator = None # Кэш выбранного движка для умного сброса
         self.force_free_model = False 
         self.mode = mode
         self.status = "waiting" 
@@ -402,7 +456,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.mid_frame.pack(fill="x", padx=5, pady=2)
 
         self.item_res_var = ctk.StringVar(value=global_res_str)
-        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
+        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], variable=self.item_res_var, width=125, height=24)
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         
         self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Перевод [ВКЛ]", height=24, width=130, command=self.toggle_yandex)
@@ -493,7 +547,6 @@ class QueueItemWidget(ctk.CTkFrame):
                                 time.sleep(1)
                                 continue 
                         
-                        # Сохраняем новую найденную модель как основную для последующих переводов
                         if request_model == "openrouter/free" and actual_model != "openrouter/free":
                             self.app.settings["ai_model"] = actual_model
                             SettingsManager.save(self.app.settings)
@@ -574,11 +627,11 @@ class QueueItemWidget(ctk.CTkFrame):
         return text, "Без перевода"
 
     def show_translation_dialog(self, event):
-        translator = self.app.settings.get("title_translator", "Google API")
+        current_translator = self.app.settings.get("title_translator", "Google API")
         dialog = ctk.CTkToplevel(self.app)
         
         dialog.attributes('-alpha', 0.0)
-        dialog.title(f"Название видео ({translator})")
+        dialog.title(f"Название видео ({current_translator})")
         
         window_width = 500
         window_height = 250 
@@ -630,7 +683,7 @@ class QueueItemWidget(ctk.CTkFrame):
         copy_btn.pack(side="left", padx=5)
         
         another_btn = None
-        if translator == "Нейросеть (OpenAI/OpenRouter)":
+        if current_translator == "Нейросеть (OpenAI/OpenRouter)":
             def use_another_model():
                 if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model and self.used_model != "openrouter/free":
                     bl = self.app.settings.get("blacklisted_models", [])
@@ -642,6 +695,7 @@ class QueueItemWidget(ctk.CTkFrame):
                 self.force_free_model = True
                 self.translated_title = None
                 self.used_model = None
+                self.used_translator = None
                 trans_textbox.configure(state="normal")
                 trans_textbox.delete("1.0", "end")
                 trans_textbox.insert("1.0", "Выполнение перевода...")
@@ -656,8 +710,22 @@ class QueueItemWidget(ctk.CTkFrame):
             another_btn.pack(side="left", padx=5)
 
         def fetch_translation():
-            if not getattr(self, 'translated_title', None) or self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
+            blacklist = self.app.settings.get("blacklisted_models", [])
+            needs_translation = False
+            
+            # Умный сброс кэша, если изменились глобальные настройки перевода или если модель улетела в черный список
+            if not getattr(self, 'translated_title', None):
+                needs_translation = True
+            elif self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
+                needs_translation = True
+            elif getattr(self, 'used_translator', None) != current_translator:
+                needs_translation = True
+            elif current_translator == "Нейросеть (OpenAI/OpenRouter)" and getattr(self, 'used_model', None) in blacklist:
+                needs_translation = True
+
+            if needs_translation:
                 self.translated_title, self.used_model = self.translate_text(self.title_text)
+                self.used_translator = current_translator
             
             def update_text():
                 if trans_textbox.winfo_exists():
@@ -1201,7 +1269,6 @@ class VideoApp(ctk.CTk):
                 self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
                 return
                 
-            # Если файл не существует, значит мы будем качать
             self.actual_downloads_occurred = True
             # -----------------------------------------------------
 
@@ -1273,10 +1340,6 @@ class VideoApp(ctk.CTk):
             item.status = "downloading"
             self.after(0, lambda: item.set_progress_mode("determinate"))
             self.after(0, lambda: item.set_status("Скачивание оригинала (yt-dlp)...", "blue"))
-
-            temp_template = os.path.join(self.settings["save_path"], "temp_v.%(ext)s")
-            temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
-            temp_mp3 = os.path.join(self.settings["save_path"], "temp_v.mp3")
             
             if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
                 if is_audio:
@@ -1454,7 +1517,6 @@ class VideoApp(ctk.CTk):
             self._perform_exit()
 
     def _perform_exit(self):
-        # Сохранение настроек при выходе
         self.settings["global_quality"] = self.res_combobox.get()
         SettingsManager.save(self.settings)
         
