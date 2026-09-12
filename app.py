@@ -45,6 +45,30 @@ def log_error(video_id, error_msg, exception=None, vot_log=None):
     except:
         pass
 
+# Глобальные функции для плавной анимации окон
+def fade_in(window, target_alpha=1.0, step=0.1, delay=15):
+    try:
+        if not window.winfo_exists(): return
+        current = window.attributes("-alpha")
+        if current < target_alpha:
+            window.attributes("-alpha", min(current + step, target_alpha))
+            window.after(delay, fade_in, window, target_alpha, step, delay)
+    except: pass
+
+def fade_out(window, callback, step=0.1, delay=15):
+    try:
+        if not window.winfo_exists():
+            callback()
+            return
+        current = window.attributes("-alpha")
+        if current > 0.0:
+            window.attributes("-alpha", max(current - step, 0.0))
+            window.after(delay, fade_out, window, callback, step, delay)
+        else:
+            callback()
+    except:
+        callback()
+
 class SettingsManager:
     @staticmethod
     def load():
@@ -91,6 +115,8 @@ class AISettingsWindow(ctk.CTkToplevel):
         y = parent.winfo_y() + (parent.winfo_height() // 2) - (window_height // 2)
         self.geometry(f"{window_width}x{window_height}+{x}+{y}")
         self.resizable(False, False)
+        
+        self.attributes("-alpha", 0.0)
         self.transient(parent)
         self.grab_set()
 
@@ -103,15 +129,8 @@ class AISettingsWindow(ctk.CTkToplevel):
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
         
-        free_models = [
-            "openrouter/free",
-            "google/gemma-2-9b-it:free",
-            "meta-llama/llama-3.1-8b-instruct:free",
-            "qwen/qwen-2-7b-instruct:free",
-            "mistralai/mistral-7b-instruct:free",
-            "microsoft/phi-3-mini-128k-instruct:free",
-            "nvidia/nemotron-3.5-lightning:free"
-        ]
+        # Только базовая ручка + те, что программа открыла сама
+        free_models = ["openrouter/free"]
         saved_discovered = self.settings.get("discovered_models", [])
         for m in saved_discovered:
             if m not in free_models:
@@ -126,7 +145,6 @@ class AISettingsWindow(ctk.CTkToplevel):
         self.ai_token.insert(0, self.settings.get("ai_token", ""))
         self.ai_token.pack(padx=20, pady=(0, 15))
 
-        # Добавление ПКМ контекстного меню для удобной вставки токенов
         self.add_context_menu(self.ai_url)
         self.add_context_menu(self.ai_token)
 
@@ -134,7 +152,10 @@ class AISettingsWindow(ctk.CTkToplevel):
         btn_frame.pack(pady=5)
         
         ctk.CTkButton(btn_frame, text="Сохранить", command=self.save_and_close, fg_color="green", hover_color="darkgreen").pack(side="left", padx=10)
-        ctk.CTkButton(btn_frame, text="Отмена", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Отмена", command=self.cancel_close, fg_color="gray").pack(side="left", padx=10)
+        
+        self.protocol("WM_DELETE_WINDOW", self.cancel_close)
+        fade_in(self)
 
     def add_context_menu(self, widget):
         menu = Menu(widget, tearoff=0, font=("Arial", 10))
@@ -165,7 +186,11 @@ class AISettingsWindow(ctk.CTkToplevel):
         elif hasattr(self.parent, 'refresh_settings'):
             self.parent.refresh_settings()
             
-        self.destroy()
+        fade_out(self, self.destroy)
+        
+    def cancel_close(self):
+        fade_out(self, self.destroy)
+
 
 class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
@@ -181,6 +206,8 @@ class SettingsWindow(ctk.CTkToplevel):
         y = parent.winfo_y() + (parent.winfo_height() // 2) - (window_height // 2)
         self.geometry(f"{window_width}x{window_height}+{x}+{y}")
         self.resizable(False, False)
+        
+        self.attributes("-alpha", 0.0)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.transient(parent)
         self.grab_set()
@@ -241,6 +268,7 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=(5, 10)) 
 
         self.update_labels()
+        fade_in(self)
 
     def toggle_ai_btn(self, choice=None):
         if self.translator_var.get() == "Нейросеть (OpenAI/OpenRouter)":
@@ -277,7 +305,7 @@ class SettingsWindow(ctk.CTkToplevel):
         SettingsManager.save(current_settings)
         self.parent.refresh_settings()
         self.grab_release()
-        self.destroy()
+        fade_out(self, self.destroy)
 
 class PlaylistDialog(ctk.CTkToplevel):
     def __init__(self, parent, videos):
@@ -293,6 +321,7 @@ class PlaylistDialog(ctk.CTkToplevel):
         x = parent.winfo_x() + (parent.winfo_width() // 2) - 250
         y = parent.winfo_y() + (parent.winfo_height() // 2) - 235
         self.geometry(f"+{x}+{y}")
+        self.attributes("-alpha", 0.0)
         self.transient(parent)
         self.grab_set()
 
@@ -320,7 +349,10 @@ class PlaylistDialog(ctk.CTkToplevel):
         btn_frame.pack(pady=10)
         
         ctk.CTkButton(btn_frame, text="Добавить выбранные", command=self.confirm, fg_color="green", hover_color="darkgreen").pack(side="left", padx=10)
-        ctk.CTkButton(btn_frame, text="Отмена", command=self.destroy, fg_color="gray").pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Отмена", command=self.cancel_close, fg_color="gray").pack(side="left", padx=10)
+        
+        self.protocol("WM_DELETE_WINDOW", self.cancel_close)
+        fade_in(self)
 
     def update_count(self):
         selected = sum(1 for var, _ in self.checkboxes if var.get())
@@ -331,7 +363,10 @@ class PlaylistDialog(ctk.CTkToplevel):
             if var.get():
                 self.selected_videos.append(vid)
         self.parent.add_items_to_queue(self.selected_videos)
-        self.destroy()
+        fade_out(self, self.destroy)
+        
+    def cancel_close(self):
+        fade_out(self, self.destroy)
 
 class QueueItemWidget(ctk.CTkFrame):
     def __init__(self, master, app, video_info, mode, global_res_str):
@@ -343,6 +378,7 @@ class QueueItemWidget(ctk.CTkFrame):
         self.title_text = video_info.get('title', 'Видео')
         self.translated_title = None
         self.used_model = None  
+        self.force_free_model = False 
         self.mode = mode
         self.status = "waiting" 
         
@@ -406,8 +442,12 @@ class QueueItemWidget(ctk.CTkFrame):
         
         if translator == "Нейросеть (OpenAI/OpenRouter)":
             base_url = self.app.settings.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions")
-            model = self.app.settings.get("ai_model", "openrouter/free")
             token = self.app.settings.get("ai_token", "").strip()
+            
+            if getattr(self, 'force_free_model', False):
+                model = "openrouter/free"
+            else:
+                model = self.app.settings.get("ai_model", "openrouter/free")
             
             if not token:
                 return "[Ошибка: Введите API Token нейросети в Настройках API]", "N/A"
@@ -420,17 +460,8 @@ class QueueItemWidget(ctk.CTkFrame):
             }
             
             blacklist = self.app.settings.get("blacklisted_models", [])
-            free_models_fallback = [
-                "google/gemma-2-9b-it:free",
-                "meta-llama/llama-3.1-8b-instruct:free",
-                "qwen/qwen-2-7b-instruct:free",
-                "mistralai/mistral-7b-instruct:free",
-                "microsoft/phi-3-mini-128k-instruct:free",
-                "nvidia/nemotron-3.5-lightning:free"
-            ]
-            
             request_model = model
-            max_retries = 4
+            max_retries = 3
             
             for attempt in range(max_retries):
                 data = {
@@ -451,37 +482,37 @@ class QueueItemWidget(ctk.CTkFrame):
                         actual_model = resp_data.get('model', request_model)
                         
                         if actual_model in blacklist:
-                            if request_model == "openrouter/free":
-                                raise ValueError("Blacklisted model returned")
+                            if attempt < max_retries - 1:
+                                time.sleep(1)
+                                continue 
                                 
                         disc = self.app.settings.get("discovered_models", [])
-                        if actual_model not in disc and actual_model not in free_models_fallback and actual_model != "openrouter/free":
+                        if actual_model not in disc and actual_model != "openrouter/free":
                             disc.append(actual_model)
                             self.app.settings["discovered_models"] = disc
                             SettingsManager.save(self.app.settings)
                             
                         return self.clean_ai_text(raw_translation), actual_model
+                        
                 except urllib.error.HTTPError as e:
                     if e.code in [404] and request_model != "openrouter/free":
-                        # Если запрошенная конкретная модель недоступна (стала платной)
-                        pass
+                        request_model = "openrouter/free"
+                        time.sleep(1)
+                        continue
                     elif e.code in [401, 403]:
                         return f"[Ошибка ИИ {e.code}: Проверьте настройки токена]", "Ошибка API"
                     else:
                         try: err_body = e.read().decode('utf-8')
                         except: err_body = str(e)
                         log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}", e)
+                        time.sleep(1)
                 except Exception as e:
-                    pass
-                
-                # Если произошла ошибка сети, 404 или вернулась модель из черного списка — переключаем fallback
-                available = [m for m in free_models_fallback if m not in blacklist and m != request_model]
-                if available:
-                    request_model = available[attempt % len(available)]
-                else:
-                    request_model = "openrouter/free"
-                time.sleep(1)
-                
+                    if attempt == max_retries - 1:
+                        err_details = traceback.format_exc()
+                        log_error(self.video_id, f"Сетевая ошибка перевода (Нейросеть, {max_retries} попыток):\n{err_details}", e)
+                        return f"[Ошибка сети: проверьте подключение к OpenRouter]", "Ошибка Сети"
+                    time.sleep(1)
+                    
             return f"[Ошибка подключения к ИИ или все модели недоступны]", "Ошибка API"
 
         if translator == "Google API":
@@ -534,9 +565,7 @@ class QueueItemWidget(ctk.CTkFrame):
         translator = self.app.settings.get("title_translator", "Google API")
         dialog = ctk.CTkToplevel(self.app)
         
-        # Делаем окно невидимым до того как разместим по нужным координатам (устранение мерцания)
         dialog.attributes('-alpha', 0.0)
-        
         dialog.title(f"Название видео ({translator})")
         
         window_width = 500
@@ -555,7 +584,8 @@ class QueueItemWidget(ctk.CTkFrame):
 
         def on_dialog_close():
             self.app.translation_window_geometry = dialog.geometry()
-            dialog.destroy()
+            fade_out(dialog, dialog.destroy)
+            
         dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
 
         ctk.CTkLabel(dialog, text="Оригинал:", font=("Arial", 12, "bold")).pack(pady=(10, 0), padx=10, anchor="w")
@@ -590,13 +620,15 @@ class QueueItemWidget(ctk.CTkFrame):
         another_btn = None
         if translator == "Нейросеть (OpenAI/OpenRouter)":
             def use_another_model():
-                if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model:
+                # Если перевода нет или он с ошибкой - НЕ добавляем в черный список, просто перезапускаем через роутер
+                if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model and self.used_model != "openrouter/free":
                     bl = self.app.settings.get("blacklisted_models", [])
                     if self.used_model not in bl:
                         bl.append(self.used_model)
                         self.app.settings["blacklisted_models"] = bl
                         SettingsManager.save(self.app.settings)
                 
+                self.force_free_model = True
                 self.translated_title = None
                 self.used_model = None
                 trans_textbox.configure(state="normal")
@@ -637,10 +669,9 @@ class QueueItemWidget(ctk.CTkFrame):
         copy_btn.configure(state="disabled")
         if another_btn:
             another_btn.configure(state="disabled")
+            
         threading.Thread(target=fetch_translation, daemon=True).start()
-        
-        # Проявляем окно без анимации рывка
-        dialog.after(50, lambda: dialog.attributes('-alpha', 1.0))
+        fade_in(dialog)
 
     def select_manual_audio(self):
         if self.app.is_downloading: return
@@ -1130,6 +1161,31 @@ class VideoApp(ctk.CTk):
         self.clean_temp_files()
         
         try:
+            # --- РАННЯЯ ПРОВЕРКА СУЩЕСТВОВАНИЯ ИТОГОВОГО ФАЙЛА ---
+            safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
+            is_audio = (item.mode == "Только Аудио (MP3)")
+            res_raw = item.item_res_var.get()
+            res_num = 2160 if "4K" in res_raw else (int(res_raw.split("p")[0]) if "p" in res_raw else 1080)
+            
+            if is_audio:
+                base_name = f"{safe_title}.mp3"
+                final_name = base_name
+            else:
+                base_name = f"{safe_title} {res_num}p.mp4"
+                if getattr(item, 'manual_audio_path', None) or getattr(item, 'use_yandex_translation', False):
+                    final_name = f"{safe_title} {res_num}p (Яндекс).mp4"
+                else:
+                    final_name = base_name
+                    
+            base_path = os.path.join(self.settings["save_path"], base_name)
+            final_path = os.path.join(self.settings["save_path"], final_name)
+
+            if os.path.exists(final_path):
+                item.status = "done"
+                self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
+                return
+            # -----------------------------------------------------
+
             # 1. СКАЧИВАНИЕ ПЕРЕВОДА 
             if item.mode == "Видео":
                 if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
@@ -1198,27 +1254,6 @@ class VideoApp(ctk.CTk):
             item.status = "downloading"
             self.after(0, lambda: item.set_progress_mode("determinate"))
             self.after(0, lambda: item.set_status("Скачивание оригинала (yt-dlp)...", "blue"))
-            
-            safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
-            is_audio = (item.mode == "Только Аудио (MP3)")
-            
-            res_raw = item.item_res_var.get()
-            res_num = 2160 if "4K" in res_raw else (int(res_raw.split("p")[0]) if "p" in res_raw else 1080)
-            
-            if is_audio:
-                base_name = f"{safe_title}.mp3"
-                final_name = base_name
-            else:
-                base_name = f"{safe_title} {res_num}p.mp4"
-                final_name = f"{safe_title} {res_num}p (Яндекс).mp4" if actual_translation_path else base_name
-                
-            base_path = os.path.join(self.settings["save_path"], base_name)
-            final_path = os.path.join(self.settings["save_path"], final_name)
-
-            if os.path.exists(final_path):
-                item.status = "done"
-                self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
-                return
 
             temp_template = os.path.join(self.settings["save_path"], "temp_v.%(ext)s")
             temp_video = os.path.join(self.settings["save_path"], "temp_v.mp4")
