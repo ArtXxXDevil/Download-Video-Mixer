@@ -45,7 +45,6 @@ def log_error(video_id, error_msg, exception=None, vot_log=None):
     except:
         pass
 
-# Глобальные функции для плавной анимации окон
 def fade_in(window, target_alpha=1.0, step=0.1, delay=15):
     try:
         if not window.winfo_exists(): return
@@ -83,6 +82,7 @@ class SettingsManager:
             "ai_token": "",
             "discovered_models": [],
             "blacklisted_models": [],
+            "global_quality": "4K (2160p)",
             "vol_original": 15,
             "vol_translate": 100,
             "save_path": default_save
@@ -129,7 +129,6 @@ class AISettingsWindow(ctk.CTkToplevel):
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
         
-        # Только базовая ручка + те, что программа открыла сама
         free_models = ["openrouter/free"]
         saved_discovered = self.settings.get("discovered_models", [])
         for m in saved_discovered:
@@ -190,7 +189,6 @@ class AISettingsWindow(ctk.CTkToplevel):
         
     def cancel_close(self):
         fade_out(self, self.destroy)
-
 
 class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, parent):
@@ -460,6 +458,15 @@ class QueueItemWidget(ctk.CTkFrame):
             }
             
             blacklist = self.app.settings.get("blacklisted_models", [])
+            free_models_fallback = [
+                "google/gemma-2-9b-it:free",
+                "meta-llama/llama-3.1-8b-instruct:free",
+                "qwen/qwen-2-7b-instruct:free",
+                "mistralai/mistral-7b-instruct:free",
+                "microsoft/phi-3-mini-128k-instruct:free",
+                "nvidia/nemotron-3.5-lightning:free"
+            ]
+            
             request_model = model
             max_retries = 3
             
@@ -485,7 +492,12 @@ class QueueItemWidget(ctk.CTkFrame):
                             if attempt < max_retries - 1:
                                 time.sleep(1)
                                 continue 
-                                
+                        
+                        # Сохраняем новую найденную модель как основную для последующих переводов
+                        if request_model == "openrouter/free" and actual_model != "openrouter/free":
+                            self.app.settings["ai_model"] = actual_model
+                            SettingsManager.save(self.app.settings)
+
                         disc = self.app.settings.get("discovered_models", [])
                         if actual_model not in disc and actual_model != "openrouter/free":
                             disc.append(actual_model)
@@ -620,7 +632,6 @@ class QueueItemWidget(ctk.CTkFrame):
         another_btn = None
         if translator == "Нейросеть (OpenAI/OpenRouter)":
             def use_another_model():
-                # Если перевода нет или он с ошибкой - НЕ добавляем в черный список, просто перезапускаем через роутер
                 if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model and self.used_model != "openrouter/free":
                     bl = self.app.settings.get("blacklisted_models", [])
                     if self.used_model not in bl:
@@ -808,7 +819,7 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3")
+        self.title("Download Video Mixer v3.0")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
@@ -817,6 +828,7 @@ class VideoApp(ctk.CTk):
         self.queue_items = [] 
         self.vot_path = None
         self.translation_window_geometry = None
+        self.actual_downloads_occurred = False
         
         def resource_path(relative_path):
             try: base_path = sys._MEIPASS
@@ -869,6 +881,10 @@ class VideoApp(ctk.CTk):
         
         self.after(500, self.load_urls_from_file)
 
+    def save_global_quality(self, value):
+        self.settings["global_quality"] = value
+        SettingsManager.save(self.settings)
+
     def load_urls_from_file(self):
         txt_path = os.path.join(APP_DIR, "video.txt")
         if os.path.exists(txt_path):
@@ -911,9 +927,9 @@ class VideoApp(ctk.CTk):
         self.mode_seg.pack(side="left", padx=10)
         
         ctk.CTkLabel(param_frame, text="Глобальное качество:").pack(side="left", padx=(10, 5))
-        self.res_combobox = ctk.CTkComboBox(param_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], state="readonly", width=125)
+        self.res_combobox = ctk.CTkComboBox(param_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], state="readonly", width=125, command=self.save_global_quality)
         self.res_combobox.pack(side="left", padx=5)
-        self.res_combobox.set("4K (2160p)")
+        self.res_combobox.set(self.settings.get("global_quality", "4K (2160p)"))
 
         self.queue_frame = ctk.CTkScrollableFrame(self, width=810, height=350)
         self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
@@ -988,7 +1004,6 @@ class VideoApp(ctk.CTk):
     def refresh_settings(self):
         self.settings = SettingsManager.load()
         for item in self.queue_items:
-            item.translated_title = None 
             item.update_yandex_visibility(is_refresh=True)
 
     def open_settings(self): SettingsWindow(self)
@@ -1126,6 +1141,7 @@ class VideoApp(ctk.CTk):
 
         self.stop_requested = False
         self.is_downloading = True
+        self.actual_downloads_occurred = False
         self.start_btn.configure(text="⏹ Остановить очередь", command=self.stop_process, fg_color="red", hover_color="darkred")
         self.toggle_ui("disabled")
         
@@ -1184,6 +1200,9 @@ class VideoApp(ctk.CTk):
                 item.status = "done"
                 self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
                 return
+                
+            # Если файл не существует, значит мы будем качать
+            self.actual_downloads_occurred = True
             # -----------------------------------------------------
 
             # 1. СКАЧИВАНИЕ ПЕРЕВОДА 
@@ -1403,10 +1422,11 @@ class VideoApp(ctk.CTk):
             self.status_label.configure(text=f"Очередь остановлена. Завершено: {done}/{total}", text_color="orange")
         elif done == total and total > 0:
             self.status_label.configure(text="🎉 Все загрузки успешно завершены!", text_color="green")
-            self.open_save_folder()
+            if getattr(self, 'actual_downloads_occurred', False):
+                self.open_save_folder()
         else:
             self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}", text_color="red")
-            if done > 0:
+            if done > 0 and getattr(self, 'actual_downloads_occurred', False):
                 self.open_save_folder()
             
         self.toggle_ui("normal")
@@ -1434,6 +1454,10 @@ class VideoApp(ctk.CTk):
             self._perform_exit()
 
     def _perform_exit(self):
+        # Сохранение настроек при выходе
+        self.settings["global_quality"] = self.res_combobox.get()
+        SettingsManager.save(self.settings)
+        
         self.clean_temp_files()
         self.destroy()
         os._exit(0)
