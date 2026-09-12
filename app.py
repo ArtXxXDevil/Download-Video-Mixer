@@ -76,7 +76,7 @@ class SettingsManager:
             "add_translation": False,
             "show_manual_audio": False,
             "delete_original": False,
-            "title_translator": "Google API", 
+            "title_translator": "Не переводить", 
             "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
             "ai_model": "openrouter/free",
             "ai_token": "",
@@ -257,9 +257,8 @@ class SettingsWindow(ctk.CTkToplevel):
         trans_frame = ctk.CTkFrame(self, fg_color="transparent")
         trans_frame.pack(pady=5)
 
-        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Google API"))
-        # Добавлен пункт Отключено
-        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Отключено", "Google API", "MyMemory API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
+        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Не переводить"))
+        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Не переводить", "Google API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
         self.translator_menu.pack(side="left", padx=(0, 10))
 
         self.btn_ai_settings = ctk.CTkButton(trans_frame, text="Настройка API", width=120, command=self.open_ai_settings)
@@ -442,13 +441,10 @@ class QueueItemWidget(ctk.CTkFrame):
         top_frame.pack(fill="x", padx=5, pady=2)
         
         display_title = (self.title_text[:65] + '...') if len(self.title_text) > 65 else self.title_text
-        
-        translator = self.app.settings.get("title_translator", "Google API")
-        cursor_type = "hand2" if translator != "Отключено" else ""
-        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"), cursor=cursor_type)
+        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"))
         self.lbl_title.pack(side="left")
         
-        self.lbl_title.bind("<Button-1>", self.show_translation_dialog)
+        self.update_title_binding()
         
         self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
         self.btn_remove.pack(side="right")
@@ -460,7 +456,8 @@ class QueueItemWidget(ctk.CTkFrame):
         self.mid_frame.pack(fill="x", padx=5, pady=2)
 
         self.item_res_var = ctk.StringVar(value=global_res_str)
-        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], variable=self.item_res_var, width=125, height=24)
+        # ВОССТАНОВЛЕНО: Используем заглушку ["4K (2160p)"] при инициализации для срабатывания триггера загрузки
+        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         
         self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Перевод [ВКЛ]", height=24, width=130, command=self.toggle_yandex)
@@ -480,11 +477,15 @@ class QueueItemWidget(ctk.CTkFrame):
         
         self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
         self.lbl_percent.pack(side="right")
-        
-    def update_ui_from_settings(self):
-        translator = self.app.settings.get("title_translator", "Google API")
-        self.lbl_title.configure(cursor="hand2" if translator != "Отключено" else "")
-        self.update_yandex_visibility(is_refresh=True)
+
+    def update_title_binding(self):
+        translator = self.app.settings.get("title_translator", "Не переводить")
+        if translator == "Не переводить":
+            self.lbl_title.configure(cursor="")
+            self.lbl_title.unbind("<Button-1>")
+        else:
+            self.lbl_title.configure(cursor="hand2")
+            self.lbl_title.bind("<Button-1>", self.show_translation_dialog)
 
     def clean_ai_text(self, text):
         cleaned = text.strip()
@@ -619,29 +620,15 @@ class QueueItemWidget(ctk.CTkFrame):
                     if attempt == max_retries - 1:
                         log_error(self.video_id, f"Ошибка перевода названия (API Google, {max_retries} попыток)")
                         return f"[Ошибка Google API: Сбой подключения]", "Ошибка API"
-                
-        if translator == "MyMemory API":
-            try:
-                url_fallback = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=Autodetect|ru"
-                req_fallback = urllib.request.Request(url_fallback, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req_fallback, context=ctx, timeout=5) as response:
-                    data = json.loads(response.read().decode('utf-8'))
-                    if data.get("responseData", {}).get("translatedText"):
-                        return data["responseData"]["translatedText"], "MyMemory API"
-            except Exception as e2:
-                log_error(self.video_id, "Ошибка перевода (API MyMemory)", e2)
-                return f"[Ошибка MyMemory API]", "Ошибка API"
-                
+                        
         return text, "Без перевода"
 
     def show_translation_dialog(self, event):
-        current_translator = self.app.settings.get("title_translator", "Google API")
-        
-        if current_translator == "Отключено":
+        current_translator = self.app.settings.get("title_translator", "Не переводить")
+        if current_translator == "Не переводить":
             return
             
         dialog = ctk.CTkToplevel(self.app)
-        
         dialog.attributes('-alpha', 0.0)
         dialog.title(f"Название видео ({current_translator})")
         
@@ -1091,7 +1078,8 @@ class VideoApp(ctk.CTk):
     def refresh_settings(self):
         self.settings = SettingsManager.load()
         for item in self.queue_items:
-            item.update_ui_from_settings()
+            item.update_title_binding()
+            item.update_yandex_visibility(is_refresh=True)
 
     def open_settings(self): SettingsWindow(self)
 
@@ -1113,20 +1101,17 @@ class VideoApp(ctk.CTk):
                 if res.returncode == 0:
                     info = json.loads(res.stdout.splitlines()[0]) 
                     formats = info.get('formats', [])
-                    max_res = 0
+                    max_h = 0
                     for f in formats:
-                        vcodec = f.get('vcodec')
-                        if vcodec and vcodec != 'none':
-                            w = f.get('width', 0) or 0
-                            h = f.get('height', 0) or 0
-                            if w > 0 and h > 0:
-                                dim = min(w, h)
-                                if dim > max_res: max_res = dim
+                        w = f.get('width', 0) or 0
+                        h = f.get('height', 0) or 0
+                        dim = max(w, h)
+                        if dim > max_h: max_h = dim
                     
-                    if max_res >= 2160: max_val = 2160
-                    elif max_res >= 1080: max_val = 1080
-                    elif max_res >= 720: max_val = 720
-                    elif max_res >= 480: max_val = 480
+                    if max_h >= 2160: max_val = 2160
+                    elif max_h >= 1080: max_val = 1080
+                    elif max_h >= 720: max_val = 720
+                    elif max_h >= 480: max_val = 480
                     else: max_val = 360
                 else:
                     max_val = 1080 
