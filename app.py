@@ -20,17 +20,42 @@ import time
 import traceback
 from datetime import datetime
 
+# --- РАЗДЕЛЕНИЕ ПУТЕЙ ---
+
+# 1. Каталог приложения (только для чтения)
 if getattr(sys, 'frozen', False):
     if platform.system() == "Darwin":
-        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
+        APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
     else:
-        BASE_DIR = os.path.dirname(sys.executable)
+        APP_DIR = os.path.dirname(sys.executable)
 else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-APP_DIR = BASE_DIR
-SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
-LOG_FILE = os.path.join(APP_DIR, "error.log")
+# 2. Пользовательский каталог данных (Чтение/Запись)
+def get_app_data_dir():
+    system = platform.system()
+    if system == "Darwin":
+        path = os.path.join(os.path.expanduser("~/Library/Application Support"), "Download Video Mixer")
+    elif system == "Windows":
+        path = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Download Video Mixer")
+    else:
+        path = os.path.join(os.path.expanduser("~/.local/share"), "Download Video Mixer")
+    return path
+
+APP_DATA_DIR = get_app_data_dir()
+RUNTIME_DIR = os.path.join(APP_DATA_DIR, "runtime")
+BIN_DIR = os.path.join(RUNTIME_DIR, "bin")
+NODE_DIR = os.path.join(RUNTIME_DIR, "node")
+NODE_MODULES_DIR = os.path.join(RUNTIME_DIR, "node_modules")
+TEMP_DIR = os.path.join(RUNTIME_DIR, "temp")
+
+SETTINGS_FILE = os.path.join(APP_DATA_DIR, "settings.json")
+LOG_DIR = os.path.join(APP_DATA_DIR, "logs")
+LOG_FILE = os.path.join(LOG_DIR, "error.log")
+
+for d in [RUNTIME_DIR, BIN_DIR, NODE_DIR, TEMP_DIR, LOG_DIR]:
+    os.makedirs(d, exist_ok=True)
+
 
 def log_error(video_id, error_msg, exception=None, vot_log=None):
     try:
@@ -67,6 +92,144 @@ def fade_out(window, callback, step=0.1, delay=15):
             callback()
     except:
         callback()
+
+class DependencyManager:
+    """ Управляет загрузкой, проверкой и предоставлением путей ко всем внешним Runtime зависимостям """
+    def __init__(self, update_status_cb):
+        self.update_status = update_status_cb
+        self.os_name = platform.system()
+        self.node_version = "v20.18.0"
+
+        if self.os_name == "Windows":
+            self.node_exe = os.path.join(NODE_DIR, f"node-{self.node_version}-win-x64", "node.exe")
+            self.npm_cmd = os.path.join(NODE_DIR, f"node-{self.node_version}-win-x64", "npm.cmd")
+            self.node_url = f"https://nodejs.org/dist/{self.node_version}/node-{self.node_version}-win-x64.zip"
+
+            self.ffmpeg_exe_name = "ffmpeg.exe"
+            self.ytdlp_exe_name = "yt-dlp.exe"
+            self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        else:
+            self.node_exe = os.path.join(NODE_DIR, f"node-{self.node_version}-darwin-x64", "bin", "node")
+            self.npm_cmd = os.path.join(NODE_DIR, f"node-{self.node_version}-darwin-x64", "bin", "npm")
+            self.node_url = f"https://nodejs.org/dist/{self.node_version}/node-{self.node_version}-darwin-x64.tar.gz"
+
+            self.ffmpeg_exe_name = "ffmpeg"
+            self.ytdlp_exe_name = "yt-dlp"
+            self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+
+        self.ffmpeg_path = os.path.join(BIN_DIR, self.ffmpeg_exe_name)
+        self.ytdlp_path = os.path.join(BIN_DIR, self.ytdlp_exe_name)
+        self.vot_path = None
+
+    def ensure_dependencies(self, startupinfo):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        headers = {'User-Agent': 'Mozilla/5.0'}
+
+        # 1. Node.js
+        if not os.path.exists(self.node_exe):
+            self.update_status("Скачивание автономного Node.js (≈30MB)...", "orange")
+            try:
+                archive_path = os.path.join(TEMP_DIR, "node_temp.zip" if self.os_name == "Windows" else "node_temp.tar.gz")
+                req = urllib.request.Request(self.node_url, headers=headers)
+                with urllib.request.urlopen(req, context=ctx) as response, open(archive_path, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+                    
+                self.update_status("Распаковка Node.js...", "orange")
+                if self.os_name == "Windows":
+                    with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                        zip_ref.extractall(NODE_DIR)
+                else:
+                    with tarfile.open(archive_path, 'r:gz') as tar_ref:
+                        tar_ref.extractall(NODE_DIR)
+                        
+                if os.path.exists(archive_path):
+                    os.remove(archive_path)
+                    
+                if self.os_name != "Windows":
+                    os.chmod(self.node_exe, os.stat(self.node_exe).st_mode | stat.S_IEXEC)
+                    os.chmod(self.npm_cmd, os.stat(self.npm_cmd).st_mode | stat.S_IEXEC)
+            except Exception as e:
+                self.update_status("❌ Ошибка скачивания Node.js", "red")
+                log_error("Система", "Ошибка скачивания Node.js", e)
+                return False
+
+        # 2. FFmpeg & yt-dlp
+        dependencies = [
+            (self.ytdlp_path, self.ytdlp_url, "yt-dlp", "≈30MB"),
+            (self.ffmpeg_path, None, "FFmpeg", "≈40MB")
+        ]
+
+        for path, url, name, size in dependencies:
+            if not os.path.exists(path):
+                self.update_status(f"Скачивание {name} ({size})...", "orange")
+                try:
+                    if name == "FFmpeg":
+                        dl_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" if self.os_name == "Windows" else "https://evermeet.cx/ffmpeg/getrelease/zip"
+                        zip_path = os.path.join(TEMP_DIR, "ffmpeg_temp.zip")
+                        req = urllib.request.Request(dl_url, headers=headers)
+                        with urllib.request.urlopen(req, context=ctx) as response, open(zip_path, 'wb') as out_file:
+                            shutil.copyfileobj(response, out_file)
+                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                            for file_info in zip_ref.infolist():
+                                if file_info.filename.endswith(self.ffmpeg_exe_name):
+                                    with zip_ref.open(file_info) as source, open(self.ffmpeg_path, "wb") as target:
+                                        target.write(source.read())
+                                    break
+                        if os.path.exists(zip_path): os.remove(zip_path)
+                    else:
+                        req = urllib.request.Request(url, headers=headers)
+                        with urllib.request.urlopen(req, context=ctx) as response, open(path, 'wb') as out_file:
+                            shutil.copyfileobj(response, out_file)
+                    
+                    if self.os_name != "Windows": os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+                except Exception as e:
+                    self.update_status(f"❌ Ошибка скачивания {name}", "red")
+                    log_error("Система", f"Ошибка скачивания {name}", e)
+                    return False
+
+        # 3. vot-cli
+        bin_dir = os.path.join(NODE_MODULES_DIR, ".bin")
+        possible_bins = ["vot-cli-live.cmd", "vot-cli-live", "vot-cli.cmd", "vot-cli"]
+        
+        for b in possible_bins:
+            p = os.path.join(bin_dir, b)
+            if os.path.exists(p):
+                self.vot_path = p
+                break
+
+        if not self.vot_path:
+            self.update_status("Установка JS-версии vot-cli...", "orange")
+            try:
+                kwargs = {'startupinfo': startupinfo} if startupinfo else {}
+                env = os.environ.copy()
+                env["PATH"] = os.path.dirname(self.node_exe) + os.pathsep + env.get("PATH", "")
+                
+                subprocess.run([self.npm_cmd, "install", "github:fantomcheg/vot-cli-live", "--no-save", "--prefix", RUNTIME_DIR], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+                
+                for b in possible_bins:
+                    p = os.path.join(bin_dir, b)
+                    if os.path.exists(p):
+                        self.vot_path = p
+                        break
+                        
+                if not self.vot_path:
+                    raise Exception("Бинарный файл vot-cli не найден после npm install")
+            except Exception as e:
+                self.update_status("❌ Ошибка установки JS-модуля vot-cli", "red")
+                log_error("Система", "Ошибка NPM Install", e)
+                return False
+
+        self.update_status("Проверка обновлений движка...", "orange")
+        try:
+            kwargs = {'startupinfo': startupinfo} if startupinfo else {}
+            subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+        except: pass
+
+        self.update_status("Готов к работе", "black")
+        return True
+
 
 class SettingsManager:
     @staticmethod
@@ -219,7 +382,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.title("Настройки")
         
         window_width = 450
-        window_height = 550 
+        window_height = 580 
         
         parent.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
@@ -289,6 +452,10 @@ class SettingsWindow(ctk.CTkToplevel):
         
         ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=(5, 10)) 
 
+        # Кнопка полного сброса зависимостей и данных
+        reset_btn = ctk.CTkButton(self, text="Очистить данные и зависимости...", fg_color="#8B0000", hover_color="#5C0000", command=self.wipe_app_data)
+        reset_btn.pack(pady=(10, 5))
+
         self.update_labels()
         fade_in(self)
 
@@ -341,6 +508,11 @@ class SettingsWindow(ctk.CTkToplevel):
         if path:
             self.path_entry.delete(0, "end")
             self.path_entry.insert(0, os.path.abspath(path))
+
+    def wipe_app_data(self):
+        if messagebox.askyesno("Сброс приложения", "ВНИМАНИЕ!\nЭто удалит все настройки, логи и скачанные системные зависимости (Node.js, FFmpeg, yt-dlp). Приложение будет закрыто.\n\nПродолжить?"):
+            shutil.rmtree(APP_DATA_DIR, ignore_errors=True)
+            os._exit(0)
 
     def on_close(self):
         current_settings = SettingsManager.load()
@@ -456,7 +628,6 @@ class QueueItemWidget(ctk.CTkFrame):
         self.mid_frame.pack(fill="x", padx=5, pady=2)
 
         self.item_res_var = ctk.StringVar(value=global_res_str)
-        # ВОССТАНОВЛЕНО: Используем заглушку ["4K (2160p)"] при инициализации для срабатывания триггера загрузки
         self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
         self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
         
@@ -893,14 +1064,13 @@ class QueueItemWidget(ctk.CTkFrame):
 class VideoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Download Video Mixer v3.0")
+        self.title("Download Video Mixer v3.15")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.os_name = platform.system()
         self.stop_requested = False
         self.is_downloading = False
         self.queue_items = [] 
-        self.vot_path = None
         self.translation_window_geometry = None
         self.actual_downloads_occurred = False
         
@@ -919,41 +1089,27 @@ class VideoApp(ctk.CTk):
         self.geometry("850x650")
         self.settings = SettingsManager.load()
         
-        self.node_version = "v20.18.0"
-        self.node_dir = os.path.join(APP_DIR, "node_env")
-        
-        if self.os_name == "Windows":
-            self.node_exe = os.path.join(self.node_dir, f"node-{self.node_version}-win-x64", "node.exe")
-            self.npm_cmd = os.path.join(self.node_dir, f"node-{self.node_version}-win-x64", "npm.cmd")
-            self.node_url = f"https://nodejs.org/dist/{self.node_version}/node-{self.node_version}-win-x64.zip"
-            
-            self.ffmpeg_exe_name = "ffmpeg.exe"
-            self.ytdlp_exe_name = "yt-dlp.exe"
-            self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-        else:
-            self.node_exe = os.path.join(self.node_dir, f"node-{self.node_version}-darwin-x64", "bin", "node")
-            self.npm_cmd = os.path.join(self.node_dir, f"node-{self.node_version}-darwin-x64", "bin", "npm")
-            self.node_url = f"https://nodejs.org/dist/{self.node_version}/node-{self.node_version}-darwin-x64.tar.gz"
-            
-            self.ffmpeg_exe_name = "ffmpeg"
-            self.ytdlp_exe_name = "yt-dlp"
-            self.ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-            
-        self.ffmpeg_path = os.path.join(APP_DIR, self.ffmpeg_exe_name)
-        self.ytdlp_path = os.path.join(APP_DIR, self.ytdlp_exe_name)
-
         self.startupinfo = None
         if self.os_name == "Windows":
             self.startupinfo = subprocess.STARTUPINFO()
             self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
         self.build_ui()
-        
+        self.deps = DependencyManager(self.update_status_cb)
         self.format_fetch_queue = queue.Queue()
-        threading.Thread(target=self.check_dependencies, daemon=True).start()
+
+        threading.Thread(target=self.run_dependency_check, daemon=True).start()
         threading.Thread(target=self.format_fetch_worker, daemon=True).start()
         
         self.after(500, self.load_urls_from_file)
+
+    def update_status_cb(self, text, color="orange"):
+        self.after(0, lambda: self.status_label.configure(text=text, text_color=color))
+
+    def run_dependency_check(self):
+        success = self.deps.ensure_dependencies(self.startupinfo)
+        if success:
+            self.after(0, lambda: self.toggle_ui("normal"))
 
     def save_global_quality(self, value):
         self.settings["global_quality"] = value
@@ -1094,24 +1250,28 @@ class VideoApp(ctk.CTk):
                 continue
 
             try:
-                cmd = [self.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', item.url]
+                cmd = [self.deps.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', item.url]
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', **kwargs)
                 
                 if res.returncode == 0:
                     info = json.loads(res.stdout.splitlines()[0]) 
                     formats = info.get('formats', [])
-                    max_h = 0
+                    max_dim = 0
                     for f in formats:
-                        w = f.get('width', 0) or 0
-                        h = f.get('height', 0) or 0
-                        dim = max(w, h)
-                        if dim > max_h: max_h = dim
+                        vcodec = f.get('vcodec')
+                        if vcodec and vcodec != 'none':
+                            w = f.get('width', 0) or 0
+                            h = f.get('height', 0) or 0
+                            if w > 0 and h > 0:
+                                dim = min(w, h)
+                                if dim > max_dim: 
+                                    max_dim = dim
                     
-                    if max_h >= 2160: max_val = 2160
-                    elif max_h >= 1080: max_val = 1080
-                    elif max_h >= 720: max_val = 720
-                    elif max_h >= 480: max_val = 480
+                    if max_dim >= 2160: max_val = 2160
+                    elif max_dim >= 1080: max_val = 1080
+                    elif max_dim >= 720: max_val = 720
+                    elif max_dim >= 480: max_val = 480
                     else: max_val = 360
                 else:
                     max_val = 1080 
@@ -1133,7 +1293,7 @@ class VideoApp(ctk.CTk):
 
     def _analyze_url_thread(self, url):
         try:
-            cmd = [self.ytdlp_path, '--dump-json', '--ignore-errors', '--no-check-certificate', '--flat-playlist', url]
+            cmd = [self.deps.ytdlp_path, '--dump-json', '--ignore-errors', '--no-check-certificate', '--flat-playlist', url]
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
             
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='ignore', **kwargs)
@@ -1288,14 +1448,14 @@ class VideoApp(ctk.CTk):
                     actual_translation_path = item.manual_audio_path
                     self.after(0, lambda: item.set_status("Используется свой файл перевода...", "purple"))
                 
-                elif getattr(item, 'use_yandex_translation', False) and self.vot_path:
+                elif getattr(item, 'use_yandex_translation', False) and self.deps.vot_path:
                     item.status = "processing"
                     self.after(0, lambda: item.set_progress_mode("indeterminate"))
                     
                     translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
                     
                     cmd_vot = [
-                        self.vot_path, 
+                        self.deps.vot_path, 
                         f"--output={self.settings['save_path']}",
                         f"--output-file={item.video_id}.mp3",
                         "--voice-style=tts",
@@ -1304,7 +1464,7 @@ class VideoApp(ctk.CTk):
                         
                     kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                     env = os.environ.copy()
-                    env["PATH"] = os.path.dirname(self.node_exe) + os.pathsep + env.get("PATH", "")
+                    env["PATH"] = os.path.dirname(self.deps.node_exe) + os.pathsep + env.get("PATH", "")
                     
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
@@ -1354,18 +1514,18 @@ class VideoApp(ctk.CTk):
             if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
                 if is_audio:
                     cmd = [
-                        self.ytdlp_path, '--force-overwrites', '--socket-timeout', '15', '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
+                        self.deps.ytdlp_path, '--force-overwrites', '--socket-timeout', '15', '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
                         '--audio-quality', '0', '-o', temp_template, '--newline', '--no-playlist', 
                         '--retries', '10', '--fragment-retries', '10', '--no-check-certificate',
-                        '--ffmpeg-location', self.ffmpeg_path, item.url
+                        '--ffmpeg-location', self.deps.ffmpeg_path, item.url
                     ]
                 else:
                     MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
                     max_dim = MAX_DIMS.get(res_num, 1920)
                     cmd = [
-                        self.ytdlp_path, '--force-overwrites', '--socket-timeout', '15', '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                        self.deps.ytdlp_path, '--force-overwrites', '--socket-timeout', '15', '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
                         '-o', temp_video, '--newline', '--no-playlist', '--retries', '10', '--fragment-retries', '10',
-                        '--no-check-certificate', '--ffmpeg-location', self.ffmpeg_path, item.url
+                        '--no-check-certificate', '--ffmpeg-location', self.deps.ffmpeg_path, item.url
                     ]
                 
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
@@ -1419,7 +1579,7 @@ class VideoApp(ctk.CTk):
                     self.after(0, lambda: item.set_progress_mode("indeterminate"))
                 
                 v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
-                cmd_ffmpeg = [self.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
+                cmd_ffmpeg = [self.deps.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
                        '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
                        '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
                        
@@ -1532,115 +1692,6 @@ class VideoApp(ctk.CTk):
         self.clean_temp_files()
         self.destroy()
         os._exit(0)
-
-    def check_dependencies(self):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        headers = {'User-Agent': 'Mozilla/5.0'}
-
-        if not os.path.exists(self.node_exe):
-            self.after(0, lambda: self.status_label.configure(text="Скачивание автономного Node.js (≈30MB)...", text_color="orange"))
-            try:
-                os.makedirs(self.node_dir, exist_ok=True)
-                archive_path = os.path.join(APP_DIR, "node_temp.zip" if self.os_name == "Windows" else "node_temp.tar.gz")
-                req = urllib.request.Request(self.node_url, headers=headers)
-                with urllib.request.urlopen(req, context=ctx) as response, open(archive_path, 'wb') as out_file:
-                    shutil.copyfileobj(response, out_file)
-                    
-                self.after(0, lambda: self.status_label.configure(text="Распаковка Node.js...", text_color="orange"))
-                if self.os_name == "Windows":
-                    with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                        zip_ref.extractall(self.node_dir)
-                else:
-                    with tarfile.open(archive_path, 'r:gz') as tar_ref:
-                        tar_ref.extractall(self.node_dir)
-                        
-                if os.path.exists(archive_path):
-                    os.remove(archive_path)
-                    
-                if self.os_name != "Windows":
-                    os.chmod(self.node_exe, os.stat(self.node_exe).st_mode | stat.S_IEXEC)
-                    os.chmod(self.npm_cmd, os.stat(self.npm_cmd).st_mode | stat.S_IEXEC)
-            except Exception as e:
-                self.after(0, lambda: self.status_label.configure(text="❌ Ошибка скачивания Node.js", text_color="red"))
-                log_error("Система", "Ошибка скачивания Node.js", e)
-                return
-
-        dependencies = [
-            (self.ytdlp_path, self.ytdlp_url, "yt-dlp", "≈30MB"),
-            (self.ffmpeg_path, None, "FFmpeg", "≈40MB")
-        ]
-
-        for path, url, name, size in dependencies:
-            if not os.path.exists(path):
-                self.after(0, lambda n=name, s=size: self.status_label.configure(text=f"Скачивание {n} ({s})...", text_color="orange"))
-                try:
-                    if name == "FFmpeg":
-                        dl_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" if self.os_name == "Windows" else "https://evermeet.cx/ffmpeg/getrelease/zip"
-                        zip_path = os.path.join(APP_DIR, "ffmpeg_temp.zip")
-                        req = urllib.request.Request(dl_url, headers=headers)
-                        with urllib.request.urlopen(req, context=ctx) as response, open(zip_path, 'wb') as out_file:
-                            shutil.copyfileobj(response, out_file)
-                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                            for file_info in zip_ref.infolist():
-                                if file_info.filename.endswith(self.ffmpeg_exe_name):
-                                    with zip_ref.open(file_info) as source, open(self.ffmpeg_path, "wb") as target:
-                                        target.write(source.read())
-                                    break
-                        if os.path.exists(zip_path): os.remove(zip_path)
-                    else:
-                        req = urllib.request.Request(url, headers=headers)
-                        with urllib.request.urlopen(req, context=ctx) as response, open(path, 'wb') as out_file:
-                            shutil.copyfileobj(response, out_file)
-                    
-                    if self.os_name != "Windows": os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
-                except Exception as e:
-                    self.after(0, lambda n=name: self.status_label.configure(text=f"❌ Ошибка скачивания {n}", text_color="red"))
-                    log_error("Система", f"Ошибка скачивания {name}", e)
-                    return
-
-        bin_dir = os.path.join(APP_DIR, "node_modules", ".bin")
-        possible_bins = ["vot-cli-live.cmd", "vot-cli-live", "vot-cli.cmd", "vot-cli"]
-        
-        self.vot_path = None
-        for b in possible_bins:
-            p = os.path.join(bin_dir, b)
-            if os.path.exists(p):
-                self.vot_path = p
-                break
-
-        if not self.vot_path:
-            self.after(0, lambda: self.status_label.configure(text="Установка JS-версии vot-cli...", text_color="orange"))
-            try:
-                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                
-                env = os.environ.copy()
-                env["PATH"] = os.path.dirname(self.node_exe) + os.pathsep + env.get("PATH", "")
-                
-                subprocess.run([self.npm_cmd, "install", "github:fantomcheg/vot-cli-live", "--no-save", "--prefix", APP_DIR], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-                
-                for b in possible_bins:
-                    p = os.path.join(bin_dir, b)
-                    if os.path.exists(p):
-                        self.vot_path = p
-                        break
-                        
-                if not self.vot_path:
-                    raise Exception("Бинарный файл vot-cli не найден после npm install")
-            except Exception as e:
-                self.after(0, lambda: self.status_label.configure(text="❌ Ошибка установки JS-модуля vot-cli", text_color="red"))
-                log_error("Система", "Ошибка NPM Install", e)
-                return
-
-        self.after(0, lambda: self.status_label.configure(text="Проверка обновлений движка...", text_color="orange"))
-        try:
-            kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-            subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-        except: pass
-
-        self.after(0, lambda: self.status_label.configure(text="Готов к работе", text_color="black"))
-        self.after(0, lambda: self.toggle_ui("normal"))
 
 if __name__ == "__main__":
     app = VideoApp()
