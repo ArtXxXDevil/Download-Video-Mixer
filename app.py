@@ -20,6 +20,16 @@ import time
 import traceback
 from datetime import datetime
 
+# --- КОНСТАНТЫ ---
+DEFAULT_AI_MODEL = "openrouter/free"
+QUALITY_4K = "4K (2160p)"
+TRANSLATOR_NONE = "Не переводить"
+TRANSLATOR_GOOGLE = "Google API"
+TRANSLATOR_AI = "Нейросеть (OpenAI/OpenRouter)"
+DEFAULT_AI_URL = "https://openrouter.ai/api/v1/chat/completions"
+VOT_RETRY_PAUSE_SEC = 15
+MAX_RETRIES = 3
+
 # --- РАЗДЕЛЕНИЕ ПУТЕЙ ---
 
 # 1. Каталог приложения (только для чтения)
@@ -57,6 +67,51 @@ for d in [RUNTIME_DIR, BIN_DIR, NODE_DIR, TEMP_DIR, LOG_DIR]:
     os.makedirs(d, exist_ok=True)
 
 
+def create_ssl_context():
+    """Создаёт SSL-контекст с верификацией сертификатов."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+def add_context_menu(widget):
+    """Добавляет стандартное контекстное меню к виджету ввода."""
+    menu = Menu(widget, tearoff=0, font=("Arial", 10))
+    def paste():
+        try:
+            widget.delete(0, "end")
+            widget.insert(0, widget.clipboard_get())
+        except Exception:
+            pass
+    def copy():
+        try:
+            widget.clipboard_clear()
+            widget.clipboard_append(widget.get())
+        except Exception:
+            pass
+    def cut():
+        copy()
+        try:
+            widget.delete(0, "end")
+        except Exception:
+            pass
+    def select_all():
+        try:
+            widget.select_range(0, "end")
+            widget.icursor("end")
+        except Exception:
+            pass
+
+    menu.add_command(label="Вставить", command=paste)
+    menu.add_command(label="Копировать", command=copy)
+    menu.add_command(label="Вырезать", command=cut)
+    menu.add_command(label="Выделить всё", command=select_all)
+    widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+    widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+
+
 def log_error(video_id, error_msg, exception=None, vot_log=None):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -67,7 +122,7 @@ def log_error(video_id, error_msg, exception=None, vot_log=None):
                 f.write(f"Консоль VOT: {vot_log}\n")
             if exception and "urllib.error.URLError" not in str(type(exception)):
                 f.write(traceback.format_exc())
-    except:
+    except OSError:
         pass
 
 def fade_in(window, target_alpha=1.0, step=0.1, delay=15):
@@ -77,7 +132,8 @@ def fade_in(window, target_alpha=1.0, step=0.1, delay=15):
         if current < target_alpha:
             window.attributes("-alpha", min(current + step, target_alpha))
             window.after(delay, fade_in, window, target_alpha, step, delay)
-    except: pass
+    except Exception:
+        pass
 
 def fade_out(window, callback, step=0.1, delay=15):
     try:
@@ -90,7 +146,7 @@ def fade_out(window, callback, step=0.1, delay=15):
             window.after(delay, fade_out, window, callback, step, delay)
         else:
             callback()
-    except:
+    except Exception:
         callback()
 
 class DependencyManager:
@@ -122,9 +178,7 @@ class DependencyManager:
         self.vot_path = None
 
     def ensure_dependencies(self, startupinfo):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = create_ssl_context()
         headers = {'User-Agent': 'Mozilla/5.0'}
 
         # 1. Node.js
@@ -142,7 +196,7 @@ class DependencyManager:
                         zip_ref.extractall(NODE_DIR)
                 else:
                     with tarfile.open(archive_path, 'r:gz') as tar_ref:
-                        tar_ref.extractall(NODE_DIR)
+                        tar_ref.extractall(NODE_DIR, filter='data')
                         
                 if os.path.exists(archive_path):
                     os.remove(archive_path)
@@ -225,7 +279,8 @@ class DependencyManager:
         try:
             kwargs = {'startupinfo': startupinfo} if startupinfo else {}
             subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-        except: pass
+        except Exception:
+            pass
 
         self.update_status("Готов к работе", "black")
         return True
@@ -239,9 +294,9 @@ class SettingsManager:
             "add_translation": False,
             "show_manual_audio": False,
             "delete_original": False,
-            "title_translator": "Не переводить", 
-            "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
-            "ai_model": "openrouter/free",
+            "title_translator": TRANSLATOR_NONE, 
+            "ai_base_url": DEFAULT_AI_URL,
+            "ai_model": DEFAULT_AI_MODEL,
             "ai_token": "",
             "discovered_models": [],
             "blacklisted_models": [],
@@ -256,9 +311,9 @@ class SettingsManager:
                     loaded = json.load(f)
                     old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
                     if loaded.get("ai_model") in old_models:
-                        loaded["ai_model"] = "openrouter/free"
+                        loaded["ai_model"] = DEFAULT_AI_MODEL
                     return {**defaults, **loaded}
-            except:
+            except (json.JSONDecodeError, OSError):
                 return defaults
         return defaults
 
@@ -291,20 +346,20 @@ class AISettingsWindow(ctk.CTkToplevel):
 
         ctk.CTkLabel(self, text="Base URL:").pack(anchor="w", padx=20, pady=(15, 0))
         self.ai_url = ctk.CTkEntry(self, width=410)
-        self.ai_url.insert(0, self.settings.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions"))
+        self.ai_url.insert(0, self.settings.get("ai_base_url", DEFAULT_AI_URL))
         self.ai_url.pack(padx=20, pady=(0, 5))
         
         ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
         
-        free_models = ["openrouter/free"]
+        free_models = [DEFAULT_AI_MODEL]
         saved_discovered = self.settings.get("discovered_models", [])
         for m in saved_discovered:
             if m not in free_models and m not in blacklist:
                 free_models.append(m)
                 
-        current_model = self.settings.get("ai_model", "openrouter/free")
+        current_model = self.settings.get("ai_model", DEFAULT_AI_MODEL)
         if current_model in blacklist:
-            current_model = "openrouter/free"
+            current_model = DEFAULT_AI_MODEL
             self.settings["ai_model"] = current_model
             SettingsManager.save(self.settings)
 
@@ -317,8 +372,8 @@ class AISettingsWindow(ctk.CTkToplevel):
         self.ai_token.insert(0, self.settings.get("ai_token", ""))
         self.ai_token.pack(padx=20, pady=(0, 15))
 
-        self.add_context_menu(self.ai_url)
-        self.add_context_menu(self.ai_token)
+        add_context_menu(self.ai_url)
+        add_context_menu(self.ai_token)
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=5)
@@ -329,34 +384,6 @@ class AISettingsWindow(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self.cancel_close)
         fade_in(self)
 
-    def add_context_menu(self, widget):
-        menu = Menu(widget, tearoff=0, font=("Arial", 10))
-        def paste():
-            try:
-                widget.delete(0, "end")
-                widget.insert(0, widget.clipboard_get())
-            except: pass
-        def copy():
-            try:
-                widget.clipboard_clear()
-                widget.clipboard_append(widget.get())
-            except: pass
-        def cut():
-            copy()
-            try: widget.delete(0, "end")
-            except: pass
-        def select_all():
-            try:
-                widget.select_range(0, "end")
-                widget.icursor("end")
-            except: pass
-
-        menu.add_command(label="Вставить", command=paste)
-        menu.add_command(label="Копировать", command=copy)
-        menu.add_command(label="Вырезать", command=cut)
-        menu.add_command(label="Выделить всё", command=select_all)
-        widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
-        widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
     def save_and_close(self):
         current_settings = SettingsManager.load()
@@ -420,8 +447,8 @@ class SettingsWindow(ctk.CTkToplevel):
         trans_frame = ctk.CTkFrame(self, fg_color="transparent")
         trans_frame.pack(pady=5)
 
-        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", "Не переводить"))
-        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=["Не переводить", "Google API", "Нейросеть (OpenAI/OpenRouter)"], variable=self.translator_var, command=self.toggle_ai_btn)
+        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", TRANSLATOR_NONE))
+        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=[TRANSLATOR_NONE, TRANSLATOR_GOOGLE, TRANSLATOR_AI], variable=self.translator_var, command=self.toggle_ai_btn)
         self.translator_menu.pack(side="left", padx=(0, 10))
 
         self.btn_ai_settings = ctk.CTkButton(trans_frame, text="Настройка API", width=120, command=self.open_ai_settings)
@@ -448,7 +475,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.path_entry.insert(0, self.settings["save_path"])
         self.path_entry.pack(pady=5)
         
-        self.add_context_menu(self.path_entry)
+        add_context_menu(self.path_entry)
         
         ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=(5, 10)) 
 
@@ -459,37 +486,8 @@ class SettingsWindow(ctk.CTkToplevel):
         self.update_labels()
         fade_in(self)
 
-    def add_context_menu(self, widget):
-        menu = Menu(widget, tearoff=0, font=("Arial", 10))
-        def paste():
-            try:
-                widget.delete(0, "end")
-                widget.insert(0, widget.clipboard_get())
-            except: pass
-        def copy():
-            try:
-                widget.clipboard_clear()
-                widget.clipboard_append(widget.get())
-            except: pass
-        def cut():
-            copy()
-            try: widget.delete(0, "end")
-            except: pass
-        def select_all():
-            try:
-                widget.select_range(0, "end")
-                widget.icursor("end")
-            except: pass
-
-        menu.add_command(label="Вставить", command=paste)
-        menu.add_command(label="Копировать", command=copy)
-        menu.add_command(label="Вырезать", command=cut)
-        menu.add_command(label="Выделить всё", command=select_all)
-        widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
-        widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
-
     def toggle_ai_btn(self, choice=None):
-        if self.translator_var.get() == "Нейросеть (OpenAI/OpenRouter)":
+        if self.translator_var.get() == TRANSLATOR_AI:
             self.btn_ai_settings.configure(state="normal", fg_color="purple", hover_color="#6a0dad")
         else:
             self.btn_ai_settings.configure(state="disabled", fg_color="gray", hover_color="gray")
@@ -512,7 +510,7 @@ class SettingsWindow(ctk.CTkToplevel):
     def wipe_app_data(self):
         if messagebox.askyesno("Сброс приложения", "ВНИМАНИЕ!\nЭто удалит все настройки, логи и скачанные системные зависимости (Node.js, FFmpeg, yt-dlp). Приложение будет закрыто.\n\nПродолжить?"):
             shutil.rmtree(APP_DATA_DIR, ignore_errors=True)
-            os._exit(0)
+            os._exit(0)  # Намеренно: немедленный выход после удаления данных
 
     def on_close(self):
         current_settings = SettingsManager.load()
@@ -650,8 +648,8 @@ class QueueItemWidget(ctk.CTkFrame):
         self.lbl_percent.pack(side="right")
 
     def update_title_binding(self):
-        translator = self.app.settings.get("title_translator", "Не переводить")
-        if translator == "Не переводить":
+        translator = self.app.settings.get("title_translator", TRANSLATOR_NONE)
+        if translator == TRANSLATOR_NONE:
             self.lbl_title.configure(cursor="")
             self.lbl_title.unbind("<Button-1>")
         else:
@@ -668,19 +666,17 @@ class QueueItemWidget(ctk.CTkFrame):
         return cleaned
 
     def translate_text(self, text):
-        translator = self.app.settings.get("title_translator", "Google API")
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        translator = self.app.settings.get("title_translator", TRANSLATOR_GOOGLE)
+        ctx = create_ssl_context()
         
-        if translator == "Нейросеть (OpenAI/OpenRouter)":
-            base_url = self.app.settings.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions")
+        if translator == TRANSLATOR_AI:
+            base_url = self.app.settings.get("ai_base_url", DEFAULT_AI_URL)
             token = self.app.settings.get("ai_token", "").strip()
             
             if getattr(self, 'force_free_model', False):
-                model = "openrouter/free"
+                model = DEFAULT_AI_MODEL
             else:
-                model = self.app.settings.get("ai_model", "openrouter/free")
+                model = self.app.settings.get("ai_model", DEFAULT_AI_MODEL)
             
             if not token:
                 return "[Ошибка: Введите API Token нейросети в Настройках API]", "N/A"
@@ -703,7 +699,7 @@ class QueueItemWidget(ctk.CTkFrame):
             ]
             
             request_model = model
-            max_retries = 3
+            max_retries = MAX_RETRIES
             
             for attempt in range(max_retries):
                 data = {
@@ -728,12 +724,12 @@ class QueueItemWidget(ctk.CTkFrame):
                                 time.sleep(1)
                                 continue 
                         
-                        if request_model == "openrouter/free" and actual_model != "openrouter/free":
+                        if request_model == DEFAULT_AI_MODEL and actual_model != DEFAULT_AI_MODEL:
                             self.app.settings["ai_model"] = actual_model
                             SettingsManager.save(self.app.settings)
 
                         disc = self.app.settings.get("discovered_models", [])
-                        if actual_model not in disc and actual_model != "openrouter/free":
+                        if actual_model not in disc and actual_model != DEFAULT_AI_MODEL:
                             disc.append(actual_model)
                             self.app.settings["discovered_models"] = disc
                             SettingsManager.save(self.app.settings)
@@ -746,15 +742,17 @@ class QueueItemWidget(ctk.CTkFrame):
                         return f"[Ошибка сети: ИИ недоступен (возможна блокировка)]", "Ошибка Сети"
                     time.sleep(1)
                 except urllib.error.HTTPError as e:
-                    if e.code in [404, 429, 502, 500] and request_model != "openrouter/free":
-                        request_model = "openrouter/free"
+                    if e.code in [404, 429, 502, 500] and request_model != DEFAULT_AI_MODEL:
+                        request_model = DEFAULT_AI_MODEL
                         time.sleep(1)
                         continue
                     elif e.code in [401, 403]:
                         return f"[Ошибка ИИ {e.code}: Проверьте настройки токена]", "Ошибка API"
                     else:
-                        try: err_body = e.read().decode('utf-8')
-                        except: err_body = str(e)
+                        try:
+                            err_body = e.read().decode('utf-8')
+                        except Exception:
+                            err_body = str(e)
                         log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}")
                         time.sleep(1)
                 except Exception as e:
@@ -767,12 +765,12 @@ class QueueItemWidget(ctk.CTkFrame):
                 if available:
                     request_model = available[attempt % len(available)]
                 else:
-                    request_model = "openrouter/free"
+                    request_model = DEFAULT_AI_MODEL
                 time.sleep(1)
                     
             return f"[Ошибка подключения к ИИ или все модели недоступны]", "Ошибка API"
 
-        if translator == "Google API":
+        if translator == TRANSLATOR_GOOGLE:
             max_retries = 2
             for attempt in range(max_retries):
                 try:
@@ -795,8 +793,8 @@ class QueueItemWidget(ctk.CTkFrame):
         return text, "Без перевода"
 
     def show_translation_dialog(self, event):
-        current_translator = self.app.settings.get("title_translator", "Не переводить")
-        if current_translator == "Не переводить":
+        current_translator = self.app.settings.get("title_translator", TRANSLATOR_NONE)
+        if current_translator == TRANSLATOR_NONE:
             return
             
         dialog = ctk.CTkToplevel(self.app)
@@ -1045,7 +1043,8 @@ class QueueItemWidget(ctk.CTkFrame):
         if self.status in ["downloading", "processing"]:
             messagebox.showwarning("Внимание", "Дождитесь окончания или остановите очередь, чтобы удалить активный элемент.")
             return
-        self.app.queue_items.remove(self)
+        if self in self.app.queue_items:
+            self.app.queue_items.remove(self)
         self.pack_forget()
         self.destroy()
         self.app.update_queue_status()
@@ -1071,12 +1070,15 @@ class VideoApp(ctk.CTk):
         self.stop_requested = False
         self.is_downloading = False
         self.queue_items = [] 
+        self._queue_lock = threading.Lock()
         self.translation_window_geometry = None
         self.actual_downloads_occurred = False
         
         def resource_path(relative_path):
-            try: base_path = sys._MEIPASS
-            except: base_path = os.path.abspath(".")
+            try:
+                base_path = sys._MEIPASS
+            except AttributeError:
+                base_path = os.path.abspath(".")
             return os.path.join(base_path, relative_path)
 
         self.icon_path = None
@@ -1118,15 +1120,16 @@ class VideoApp(ctk.CTk):
     def load_urls_from_file(self):
         txt_path = os.path.join(APP_DIR, "video.txt")
         if os.path.exists(txt_path):
-            try:
-                with open(txt_path, "r", encoding="utf-8") as f:
-                    urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-                
-                for url in urls:
-                    threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
-                    time.sleep(0.2) 
-            except Exception as e:
-                print(f"Error reading video.txt: {e}")
+            def _load_batch():
+                try:
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+                    for url in urls:
+                        threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
+                        time.sleep(0.2)
+                except Exception as e:
+                    print(f"Error reading video.txt: {e}")
+            threading.Thread(target=_load_batch, daemon=True).start()
 
     def build_ui(self):
         top_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -1159,7 +1162,7 @@ class VideoApp(ctk.CTk):
         ctk.CTkLabel(param_frame, text="Глобальное качество:").pack(side="left", padx=(10, 5))
         self.res_combobox = ctk.CTkComboBox(param_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], state="readonly", width=125, command=self.save_global_quality)
         self.res_combobox.pack(side="left", padx=5)
-        self.res_combobox.set(self.settings.get("global_quality", "4K (2160p)"))
+        self.res_combobox.set(self.settings.get("global_quality", QUALITY_4K))
 
         self.queue_frame = ctk.CTkScrollableFrame(self, width=810, height=350)
         self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
@@ -1180,13 +1183,25 @@ class VideoApp(ctk.CTk):
         try:
             self.url_entry.delete(0, "end") 
             self.url_entry.insert(0, self.clipboard_get())
-        except: pass
+        except Exception:
+            pass
         return "break"
+
     def copy_text(self, event=None):
-        if self.url_entry.get(): self.clipboard_clear(); self.clipboard_append(self.url_entry.get())
+        if self.url_entry.get():
+            self.clipboard_clear()
+            self.clipboard_append(self.url_entry.get())
         return "break"
-    def cut_text(self, event=None): self.copy_text(); self.url_entry.delete(0, "end"); return "break"
-    def select_all(self, event=None): self.url_entry.select_range(0, "end"); self.url_entry.icursor("end"); return "break"
+
+    def cut_text(self, event=None):
+        self.copy_text()
+        self.url_entry.delete(0, "end")
+        return "break"
+
+    def select_all(self, event=None):
+        self.url_entry.select_range(0, "end")
+        self.url_entry.icursor("end")
+        return "break"
 
     def on_mode_change(self, value):
         if value == "Видео":
@@ -1264,9 +1279,8 @@ class VideoApp(ctk.CTk):
                             w = f.get('width', 0) or 0
                             h = f.get('height', 0) or 0
                             if w > 0 and h > 0:
-                                dim = min(w, h)
-                                if dim > max_dim: 
-                                    max_dim = dim
+                                if h > max_dim: 
+                                    max_dim = h
                     
                     if max_dim >= 2160: max_val = 2160
                     elif max_dim >= 1080: max_val = 1080
@@ -1275,7 +1289,7 @@ class VideoApp(ctk.CTk):
                     else: max_val = 360
                 else:
                     max_val = 1080 
-            except:
+            except Exception:
                 max_val = 1080 
 
             all_res = [(2160, "4K (2160p)"), (1080, "1080p FullHD"), (720, "720p HD"), (480, "480p SD"), (360, "360p SD")]
@@ -1307,7 +1321,8 @@ class VideoApp(ctk.CTk):
                     if data.get('id'):
                         videos.append(data)
                         self.after(0, lambda c=len(videos): self.status_label.configure(text=f"Анализ... Найдено видео: {c}", text_color="black"))
-                except: pass
+                except (json.JSONDecodeError, KeyError):
+                    pass
                 
             process.wait()
             if not videos: raise Exception("Видео не найдено или доступ закрыт.")
@@ -1356,7 +1371,7 @@ class VideoApp(ctk.CTk):
         for item in to_remove:
             item.pack_forget()
             item.destroy()
-            self.queue_items.remove(item)
+        self.queue_items = [item for item in self.queue_items if item not in to_remove]
         self.update_queue_status()
 
     def stop_process(self):
@@ -1384,7 +1399,8 @@ class VideoApp(ctk.CTk):
         threading.Thread(target=self._process_queue_thread, daemon=True).start()
 
     def _process_queue_thread(self):
-        for item in self.queue_items:
+        items_snapshot = list(self.queue_items)
+        for item in items_snapshot:
             if self.stop_requested: break
             
             while item.status == "fetching_formats" and not self.stop_requested:
@@ -1400,8 +1416,10 @@ class VideoApp(ctk.CTk):
         if save_dir and os.path.exists(save_dir):
             for file_name in os.listdir(save_dir):
                 if file_name.startswith("temp_v") or file_name.startswith("temp_trans_"):
-                    try: os.remove(os.path.join(save_dir, file_name))
-                    except: pass
+                    try:
+                        os.remove(os.path.join(save_dir, file_name))
+                    except OSError:
+                        pass
         
     def download_item(self, item):
         process = None
@@ -1499,8 +1517,8 @@ class VideoApp(ctk.CTk):
                             break
                         else:
                             if attempt < max_attempts:
-                                self.after(0, lambda: item.set_status("Яндекс просит подождать... Пауза 15 сек...", "purple"))
-                                for _ in range(15):
+                                self.after(0, lambda: item.set_status(f"Яндекс просит подождать... Пауза {VOT_RETRY_PAUSE_SEC} сек...", "purple"))
+                                for _ in range(VOT_RETRY_PAUSE_SEC):
                                     if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
                                     time.sleep(1)
                             else:
@@ -1603,6 +1621,9 @@ class VideoApp(ctk.CTk):
                             self.after(0, item.update_progress, overall)
                             
                 process_ff.wait()
+                if process_ff.returncode != 0 and not self.stop_requested:
+                    raise Exception(f"FFmpeg завершился с кодом {process_ff.returncode}")
+                
                 if duration <= 0:
                     self.after(0, lambda: item.set_progress_mode("determinate"))
                     
@@ -1640,8 +1661,10 @@ class VideoApp(ctk.CTk):
         finally:
             if actual_translation_path and os.path.exists(actual_translation_path):
                 if getattr(item, 'manual_audio_path', None) != actual_translation_path:
-                    try: os.remove(actual_translation_path)
-                    except: pass
+                    try:
+                        os.remove(actual_translation_path)
+                    except OSError:
+                        pass
             self.clean_temp_files()
 
     def restore_ui_state(self):
@@ -1691,7 +1714,7 @@ class VideoApp(ctk.CTk):
         
         self.clean_temp_files()
         self.destroy()
-        os._exit(0)
+        os._exit(0)  # Намеренно: daemon-потоки не дают процессу завершиться через sys.exit()
 
 if __name__ == "__main__":
     app = VideoApp()
