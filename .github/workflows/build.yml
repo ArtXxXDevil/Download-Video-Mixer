@@ -28,14 +28,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install customtkinter pyinstaller certifi ruff
-
-      - name: Lint
-        run: ruff check app.py
+          pip install flet pyinstaller
 
       - name: Build Windows app
         run: |
-          pyinstaller --noconfirm --onefile --windowed --icon icon.ico --add-data "icon.ico;." --name "Download Video Mixer" app.py
+          flet pack app.py `
+            --name "Download Video Mixer" `
+            --icon icon.ico `
+            --add-data "icon.ico;." `
+            --product-name "Download Video Mixer" `
+            --product-version "4.0.0" `
+            --file-description "Download Video Mixer - Video downloader with Yandex translation"
 
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
@@ -59,15 +62,18 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install customtkinter pyinstaller certifi ruff
-
-      - name: Lint
-        run: ruff check app.py
+          pip install flet pyinstaller
 
       - name: Build macOS app
         run: |
-          pyinstaller --noconfirm --windowed --icon icon.icns --add-data "icon.icns:." --name "Download Video Mixer" app.py
-          
+          flet pack app.py \
+            --name "Download Video Mixer" \
+            --icon icon.icns \
+            --add-data "icon.icns:." \
+            --product-name "Download Video Mixer" \
+            --product-version "4.0.0" \
+            --file-description "Download Video Mixer - Video downloader with Yandex translation"
+
           # Принудительно возвращаем права на исполнение бинарнику внутри пакета
           chmod +x "dist/Download Video Mixer.app/Contents/MacOS/Download Video Mixer"
 
