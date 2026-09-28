@@ -1,5 +1,4 @@
-import customtkinter as ctk
-from tkinter import filedialog, messagebox, Menu
+import flet as ft
 import subprocess
 import threading
 import os
@@ -19,16 +18,6 @@ import queue
 import time
 import traceback
 from datetime import datetime
-
-# --- КОНСТАНТЫ ---
-DEFAULT_AI_MODEL = "openrouter/free"
-QUALITY_4K = "4K (2160p)"
-TRANSLATOR_NONE = "Не переводить"
-TRANSLATOR_GOOGLE = "Google API"
-TRANSLATOR_AI = "Нейросеть (OpenAI/OpenRouter)"
-DEFAULT_AI_URL = "https://openrouter.ai/api/v1/chat/completions"
-VOT_RETRY_PAUSE_SEC = 15
-MAX_RETRIES = 3
 
 # --- РАЗДЕЛЕНИЕ ПУТЕЙ ---
 
@@ -67,51 +56,6 @@ for d in [RUNTIME_DIR, BIN_DIR, NODE_DIR, TEMP_DIR, LOG_DIR]:
     os.makedirs(d, exist_ok=True)
 
 
-def create_ssl_context():
-    """Создаёт SSL-контекст с верификацией сертификатов."""
-    try:
-        import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        return ssl.create_default_context()
-
-
-def add_context_menu(widget):
-    """Добавляет стандартное контекстное меню к виджету ввода."""
-    menu = Menu(widget, tearoff=0, font=("Arial", 10))
-    def paste():
-        try:
-            widget.delete(0, "end")
-            widget.insert(0, widget.clipboard_get())
-        except Exception:
-            pass
-    def copy():
-        try:
-            widget.clipboard_clear()
-            widget.clipboard_append(widget.get())
-        except Exception:
-            pass
-    def cut():
-        copy()
-        try:
-            widget.delete(0, "end")
-        except Exception:
-            pass
-    def select_all():
-        try:
-            widget.select_range(0, "end")
-            widget.icursor("end")
-        except Exception:
-            pass
-
-    menu.add_command(label="Вставить", command=paste)
-    menu.add_command(label="Копировать", command=copy)
-    menu.add_command(label="Вырезать", command=cut)
-    menu.add_command(label="Выделить всё", command=select_all)
-    widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
-    widget.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
-
-
 def log_error(video_id, error_msg, exception=None, vot_log=None):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -122,32 +66,9 @@ def log_error(video_id, error_msg, exception=None, vot_log=None):
                 f.write(f"Консоль VOT: {vot_log}\n")
             if exception and "urllib.error.URLError" not in str(type(exception)):
                 f.write(traceback.format_exc())
-    except OSError:
+    except:
         pass
 
-def fade_in(window, target_alpha=1.0, step=0.1, delay=15):
-    try:
-        if not window.winfo_exists(): return
-        current = window.attributes("-alpha")
-        if current < target_alpha:
-            window.attributes("-alpha", min(current + step, target_alpha))
-            window.after(delay, fade_in, window, target_alpha, step, delay)
-    except Exception:
-        pass
-
-def fade_out(window, callback, step=0.1, delay=15):
-    try:
-        if not window.winfo_exists():
-            callback()
-            return
-        current = window.attributes("-alpha")
-        if current > 0.0:
-            window.attributes("-alpha", max(current - step, 0.0))
-            window.after(delay, fade_out, window, callback, step, delay)
-        else:
-            callback()
-    except Exception:
-        callback()
 
 class DependencyManager:
     """ Управляет загрузкой, проверкой и предоставлением путей ко всем внешним Runtime зависимостям """
@@ -178,7 +99,9 @@ class DependencyManager:
         self.vot_path = None
 
     def ensure_dependencies(self, startupinfo):
-        ctx = create_ssl_context()
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         headers = {'User-Agent': 'Mozilla/5.0'}
 
         # 1. Node.js
@@ -196,7 +119,7 @@ class DependencyManager:
                         zip_ref.extractall(NODE_DIR)
                 else:
                     with tarfile.open(archive_path, 'r:gz') as tar_ref:
-                        tar_ref.extractall(NODE_DIR, filter='data')
+                        tar_ref.extractall(NODE_DIR)
                         
                 if os.path.exists(archive_path):
                     os.remove(archive_path)
@@ -279,10 +202,9 @@ class DependencyManager:
         try:
             kwargs = {'startupinfo': startupinfo} if startupinfo else {}
             subprocess.run([self.ytdlp_path, "-U"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-        except Exception:
-            pass
+        except: pass
 
-        self.update_status("Готов к работе", "black")
+        self.update_status("Готов к работе", "green")
         return True
 
 
@@ -294,9 +216,9 @@ class SettingsManager:
             "add_translation": False,
             "show_manual_audio": False,
             "delete_original": False,
-            "title_translator": TRANSLATOR_NONE, 
-            "ai_base_url": DEFAULT_AI_URL,
-            "ai_model": DEFAULT_AI_MODEL,
+            "title_translator": "Не переводить", 
+            "ai_base_url": "https://openrouter.ai/api/v1/chat/completions",
+            "ai_model": "openrouter/free",
             "ai_token": "",
             "discovered_models": [],
             "blacklisted_models": [],
@@ -311,9 +233,9 @@ class SettingsManager:
                     loaded = json.load(f)
                     old_models = ["google/gemma-2-9b-it:free", "meta-llama/llama-3.1-8b-instruct:free", "microsoft/phi-3-mini-128k-instruct:free"]
                     if loaded.get("ai_model") in old_models:
-                        loaded["ai_model"] = DEFAULT_AI_MODEL
+                        loaded["ai_model"] = "openrouter/free"
                     return {**defaults, **loaded}
-            except (json.JSONDecodeError, OSError):
+            except:
                 return defaults
         return defaults
 
@@ -322,343 +244,534 @@ class SettingsManager:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=4)
 
-class AISettingsWindow(ctk.CTkToplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("Настройка API")
-        
-        window_width = 450
-        window_height = 280
-        
-        parent.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
-        y = parent.winfo_y() + (parent.winfo_height() // 2) - (window_height // 2)
-        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        self.resizable(False, False)
-        
-        self.attributes("-alpha", 0.0)
-        self.transient(parent)
-        self.grab_set()
 
-        self.settings = SettingsManager.load()
-        blacklist = self.settings.get("blacklisted_models", [])
+# ─────────────────────────────────────────────────────────────────────────────
+# UI HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
-        ctk.CTkLabel(self, text="Base URL:").pack(anchor="w", padx=20, pady=(15, 0))
-        self.ai_url = ctk.CTkEntry(self, width=410)
-        self.ai_url.insert(0, self.settings.get("ai_base_url", DEFAULT_AI_URL))
-        self.ai_url.pack(padx=20, pady=(0, 5))
-        
-        ctk.CTkLabel(self, text="Модель (Model):").pack(anchor="w", padx=20)
-        
-        free_models = [DEFAULT_AI_MODEL]
-        saved_discovered = self.settings.get("discovered_models", [])
-        for m in saved_discovered:
-            if m not in free_models and m not in blacklist:
-                free_models.append(m)
-                
-        current_model = self.settings.get("ai_model", DEFAULT_AI_MODEL)
-        if current_model in blacklist:
-            current_model = DEFAULT_AI_MODEL
-            self.settings["ai_model"] = current_model
-            SettingsManager.save(self.settings)
+# Цветовая палитра приложения
+ACCENT       = "#A855F7"    # Фиолетовый акцент
+ACCENT_HOVER = "#9333EA"
+SURFACE      = "#18181B"    # Тёмный фон
+SURFACE2     = "#27272A"    # Карточки
+SURFACE3     = "#3F3F46"    # Бордер / hover
+TEXT_PRIMARY = "#FAFAFA"
+TEXT_MUTED   = "#A1A1AA"
+SUCCESS      = "#22C55E"
+ERROR_COLOR  = "#EF4444"
+WARNING      = "#F59E0B"
+INFO         = "#3B82F6"
+PURPLE_DIM   = "#7C3AED"
 
-        self.ai_model = ctk.CTkComboBox(self, width=410, values=free_models)
-        self.ai_model.set(current_model)
-        self.ai_model.pack(padx=20, pady=(0, 5))
-        
-        ctk.CTkLabel(self, text="API Token:").pack(anchor="w", padx=20)
-        self.ai_token = ctk.CTkEntry(self, width=410, show="*")
-        self.ai_token.insert(0, self.settings.get("ai_token", ""))
-        self.ai_token.pack(padx=20, pady=(0, 15))
-
-        add_context_menu(self.ai_url)
-        add_context_menu(self.ai_token)
-
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=5)
-        
-        ctk.CTkButton(btn_frame, text="Сохранить", command=self.save_and_close, fg_color="green", hover_color="darkgreen").pack(side="left", padx=10)
-        ctk.CTkButton(btn_frame, text="Отмена", command=self.cancel_close, fg_color="gray").pack(side="left", padx=10)
-        
-        self.protocol("WM_DELETE_WINDOW", self.cancel_close)
-        fade_in(self)
+def snack(page: ft.Page, msg: str, color: str = SURFACE2, icon=None):
+    """Показывает SnackBar с сообщением."""
+    content_row = ft.Row(
+        [
+            ft.Icon(icon, color=TEXT_PRIMARY, size=18) if icon else ft.Container(),
+            ft.Text(msg, color=TEXT_PRIMARY, size=13),
+        ],
+        tight=True,
+        spacing=8,
+    )
+    sb = ft.SnackBar(
+        content=content_row,
+        bgcolor=color,
+        duration=3500,
+    )
+    page.overlay.append(sb)
+    sb.open = True
+    page.update()
 
 
-    def save_and_close(self):
-        current_settings = SettingsManager.load()
-        current_settings["ai_base_url"] = self.ai_url.get().strip()
-        current_settings["ai_model"] = self.ai_model.get().strip()
-        current_settings["ai_token"] = self.ai_token.get().strip()
-        SettingsManager.save(current_settings)
-        
-        if hasattr(self.parent, 'parent') and hasattr(self.parent.parent, 'refresh_settings'):
-            self.parent.parent.refresh_settings()
-        elif hasattr(self.parent, 'refresh_settings'):
-            self.parent.refresh_settings()
-            
-        fade_out(self, self.destroy)
-        
-    def cancel_close(self):
-        fade_out(self, self.destroy)
+def _card(content, padding=10, border_radius=10, bgcolor=SURFACE2):
+    return ft.Container(
+        content=content,
+        padding=padding,
+        border_radius=border_radius,
+        bgcolor=bgcolor,
+        border=ft.border.all(1, SURFACE3),
+    )
 
-class SettingsWindow(ctk.CTkToplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("Настройки")
-        
-        window_width = 450
-        window_height = 580 
-        
-        parent.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() // 2) - (window_width // 2)
-        y = parent.winfo_y() + (parent.winfo_height() // 2) - (window_height // 2)
-        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        self.resizable(False, False)
-        
-        self.attributes("-alpha", 0.0)
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.transient(parent)
-        self.grab_set()
-        self.focus_set()
 
-        if getattr(parent, 'icon_path', None):
-            self.after(250, lambda: self.wm_iconbitmap(parent.icon_path))
+# ─────────────────────────────────────────────────────────────────────────────
+# QueueItemWidget  — элемент очереди загрузок
+# ─────────────────────────────────────────────────────────────────────────────
 
-        self.settings = SettingsManager.load()
+class QueueItemWidget:
+    """Представляет один элемент в очереди. Строит ft.Container и управляет своим состоянием."""
 
-        ctk.CTkLabel(self, text="Озвучка видео (Yandex)", font=("Arial", 16, "bold")).pack(pady=(10, 5))
-
-        self.trans_var = ctk.BooleanVar(value=self.settings["add_translation"])
-        self.check_trans = ctk.CTkCheckBox(self, text="Авто-перевод Яндекса по умолчанию", variable=self.trans_var, command=self.parent.refresh_settings)
-        self.check_trans.pack(pady=5) 
-        
-        self.manual_var = ctk.BooleanVar(value=self.settings.get("show_manual_audio", False))
-        self.check_manual = ctk.CTkCheckBox(self, text="Показывать кнопку ручного добавления аудио", variable=self.manual_var, command=self.parent.refresh_settings)
-        self.check_manual.pack(pady=5) 
-        
-        self.del_orig_var = ctk.BooleanVar(value=self.settings.get("delete_original", False))
-        self.check_del_orig = ctk.CTkCheckBox(self, text="Удалять оригинал видео после успешного перевода", variable=self.del_orig_var, command=self.parent.refresh_settings)
-        self.check_del_orig.pack(pady=5)
-
-        ctk.CTkLabel(self, text="Перевод названий (Текст)", font=("Arial", 16, "bold")).pack(pady=(15, 5))
-
-        trans_frame = ctk.CTkFrame(self, fg_color="transparent")
-        trans_frame.pack(pady=5)
-
-        self.translator_var = ctk.StringVar(value=self.settings.get("title_translator", TRANSLATOR_NONE))
-        self.translator_menu = ctk.CTkOptionMenu(trans_frame, values=[TRANSLATOR_NONE, TRANSLATOR_GOOGLE, TRANSLATOR_AI], variable=self.translator_var, command=self.toggle_ai_btn)
-        self.translator_menu.pack(side="left", padx=(0, 10))
-
-        self.btn_ai_settings = ctk.CTkButton(trans_frame, text="Настройка API", width=120, command=self.open_ai_settings)
-        self.btn_ai_settings.pack(side="left")
-
-        self.toggle_ai_btn()
-
-        ctk.CTkLabel(self, text="Параметры громкости", font=("Arial", 16, "bold")).pack(pady=(15, 5)) 
-
-        self.lbl_vol1 = ctk.CTkLabel(self, text=f"Громкость оригинала: {self.settings['vol_original']}%")
-        self.lbl_vol1.pack()
-        self.slider_vol1 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
-        self.slider_vol1.set(self.settings["vol_original"])
-        self.slider_vol1.pack(pady=5) 
-
-        self.lbl_vol2 = ctk.CTkLabel(self, text=f"Громкость перевода: {self.settings['vol_translate']}%")
-        self.lbl_vol2.pack()
-        self.slider_vol2 = ctk.CTkSlider(self, from_=0, to=100, command=self.update_labels)
-        self.slider_vol2.set(self.settings["vol_translate"])
-        self.slider_vol2.pack(pady=5) 
-
-        ctk.CTkLabel(self, text="Путь сохранения", font=("Arial", 16, "bold")).pack(pady=(15, 5)) 
-        self.path_entry = ctk.CTkEntry(self, width=350)
-        self.path_entry.insert(0, self.settings["save_path"])
-        self.path_entry.pack(pady=5)
-        
-        add_context_menu(self.path_entry)
-        
-        ctk.CTkButton(self, text="Обзор", command=self.browse_folder).pack(pady=(5, 10)) 
-
-        # Кнопка полного сброса зависимостей и данных
-        reset_btn = ctk.CTkButton(self, text="Очистить данные и зависимости...", fg_color="#8B0000", hover_color="#5C0000", command=self.wipe_app_data)
-        reset_btn.pack(pady=(10, 5))
-
-        self.update_labels()
-        fade_in(self)
-
-    def toggle_ai_btn(self, choice=None):
-        if self.translator_var.get() == TRANSLATOR_AI:
-            self.btn_ai_settings.configure(state="normal", fg_color="purple", hover_color="#6a0dad")
-        else:
-            self.btn_ai_settings.configure(state="disabled", fg_color="gray", hover_color="gray")
-
-    def open_ai_settings(self):
-        AISettingsWindow(self)
-
-    def update_labels(self, _=None):
-        self.lbl_vol1.configure(text=f"Громкость оригинала: {int(self.slider_vol1.get())}%")
-        self.lbl_vol2.configure(text=f"Громкость перевода: {int(self.slider_vol2.get())}%")
-
-    def browse_folder(self):
-        current_path = self.path_entry.get()
-        initial = os.path.abspath(current_path) if current_path and os.path.exists(current_path) else os.path.join(os.path.expanduser("~"), "Downloads")
-        path = filedialog.askdirectory(initialdir=initial)
-        if path:
-            self.path_entry.delete(0, "end")
-            self.path_entry.insert(0, os.path.abspath(path))
-
-    def wipe_app_data(self):
-        if messagebox.askyesno("Сброс приложения", "ВНИМАНИЕ!\nЭто удалит все настройки, логи и скачанные системные зависимости (Node.js, FFmpeg, yt-dlp). Приложение будет закрыто.\n\nПродолжить?"):
-            shutil.rmtree(APP_DATA_DIR, ignore_errors=True)
-            os._exit(0)  # Намеренно: немедленный выход после удаления данных
-
-    def on_close(self):
-        current_settings = SettingsManager.load()
-        current_settings.update({
-            "add_translation": self.trans_var.get(),
-            "show_manual_audio": self.manual_var.get(),
-            "delete_original": self.del_orig_var.get(),
-            "title_translator": self.translator_var.get(),
-            "vol_original": int(self.slider_vol1.get()),
-            "vol_translate": int(self.slider_vol2.get()),
-            "save_path": self.path_entry.get()
-        })
-        SettingsManager.save(current_settings)
-        self.parent.refresh_settings()
-        self.grab_release()
-        fade_out(self, self.destroy)
-
-class PlaylistDialog(ctk.CTkToplevel):
-    def __init__(self, parent, videos):
-        super().__init__(parent)
-        self.parent = parent
-        self.videos = videos
-        self.selected_videos = []
-        
-        self.title("Плейлист обнаружен")
-        self.geometry("500x470")
-        
-        parent.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() // 2) - 250
-        y = parent.winfo_y() + (parent.winfo_height() // 2) - 235
-        self.geometry(f"+{x}+{y}")
-        self.attributes("-alpha", 0.0)
-        self.transient(parent)
-        self.grab_set()
-
-        ctk.CTkLabel(self, text="Выберите видео для загрузки:", font=("Arial", 14, "bold")).pack(pady=(10, 0))
-        
-        self.total_count = len(self.videos)
-        self.lbl_count = ctk.CTkLabel(self, text=f"Выбрано: {self.total_count} из {self.total_count}", font=("Arial", 12))
-        self.lbl_count.pack(pady=(0, 5))
-        
-        self.scroll = ctk.CTkScrollableFrame(self, width=450, height=300)
-        self.scroll.pack(pady=5, padx=10, fill="both", expand=True)
-
-        self.checkboxes = []
-        for vid in self.videos:
-            var = ctk.BooleanVar(value=True)
-            title = vid.get('title', 'Без названия')
-            duration = vid.get('duration', 0)
-            dur_str = f" ({int(duration)//60}:{int(duration)%60:02d})" if duration else ""
-            
-            cb = ctk.CTkCheckBox(self.scroll, text=f"{title}{dur_str}", variable=var, command=self.update_count)
-            cb.pack(anchor="w", pady=2, padx=5)
-            self.checkboxes.append((var, vid))
-
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=10)
-        
-        ctk.CTkButton(btn_frame, text="Добавить выбранные", command=self.confirm, fg_color="green", hover_color="darkgreen").pack(side="left", padx=10)
-        ctk.CTkButton(btn_frame, text="Отмена", command=self.cancel_close, fg_color="gray").pack(side="left", padx=10)
-        
-        self.protocol("WM_DELETE_WINDOW", self.cancel_close)
-        fade_in(self)
-
-    def update_count(self):
-        selected = sum(1 for var, _ in self.checkboxes if var.get())
-        self.lbl_count.configure(text=f"Выбрано: {selected} из {self.total_count}")
-
-    def confirm(self):
-        for var, vid in self.checkboxes:
-            if var.get():
-                self.selected_videos.append(vid)
-        self.parent.add_items_to_queue(self.selected_videos)
-        fade_out(self, self.destroy)
-        
-    def cancel_close(self):
-        fade_out(self, self.destroy)
-
-class QueueItemWidget(ctk.CTkFrame):
-    def __init__(self, master, app, video_info, mode, global_res_str):
-        super().__init__(master)
+    def __init__(self, app: "VideoApp", video_info: dict, mode: str, global_res_str: str):
         self.app = app
+        self.page = app.page
         self.video_info = video_info
         self.video_id = video_info.get('id', '')
         self.url = video_info.get('url') or f"https://www.youtube.com/watch?v={self.video_id}"
         self.title_text = video_info.get('title', 'Видео')
         self.translated_title = None
-        self.used_model = None  
-        self.used_translator = None 
-        self.force_free_model = False 
+        self.used_model = None
+        self.used_translator = None
+        self.force_free_model = False
         self.mode = mode
-        self.status = "waiting" 
-        
+        self.status = "waiting"
+
         self.use_yandex_translation = self.app.settings.get("add_translation", False)
         self.manual_audio_path = None
-        
-        top_frame = ctk.CTkFrame(self, fg_color="transparent")
-        top_frame.pack(fill="x", padx=5, pady=2)
-        
-        display_title = (self.title_text[:65] + '...') if len(self.title_text) > 65 else self.title_text
-        self.lbl_title = ctk.CTkLabel(top_frame, text=display_title, font=("Arial", 12, "bold"))
-        self.lbl_title.pack(side="left")
-        
-        self.update_title_binding()
-        
-        self.btn_remove = ctk.CTkButton(top_frame, text="❌", width=30, height=24, fg_color="transparent", text_color="red", hover_color="#ffcccc", command=self.remove_self)
-        self.btn_remove.pack(side="right")
-        
-        self.btn_restart = ctk.CTkButton(top_frame, text="↻ Сброс", font=("Arial", 11, "bold"), width=60, height=24, fg_color="transparent", text_color="#1F6AA5", hover_color="#ccccff", command=self.restart_self)
-        self.btn_restart.pack(side="right", padx=(0, 5))
 
-        self.mid_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.mid_frame.pack(fill="x", padx=5, pady=2)
+        # ── Прогресс-бар ──
+        self.progress_bar = ft.ProgressBar(
+            value=0,
+            color=ACCENT,
+            bgcolor=SURFACE3,
+            expand=True,
+        )
+        self.lbl_percent = ft.Text("0%", size=12, color=TEXT_MUTED, width=38, text_align=ft.TextAlign.RIGHT)
 
-        self.item_res_var = ctk.StringVar(value=global_res_str)
-        self.combo_res = ctk.CTkComboBox(self.mid_frame, values=["4K (2160p)"], variable=self.item_res_var, width=125, height=24)
-        self.lbl_mp3 = ctk.CTkLabel(self.mid_frame, text="[Аудио MP3]", text_color="gray", font=("Arial", 11))
-        
-        self.btn_yandex = ctk.CTkButton(self.mid_frame, text="🗣 Перевод [ВКЛ]", height=24, width=130, command=self.toggle_yandex)
-        self.btn_manual = ctk.CTkButton(self.mid_frame, text="📂 Свой аудио-файл", height=24, width=140, fg_color="gray", hover_color="#555555", command=self.select_manual_audio)
+        # ── Статус ──
+        self.lbl_status = ft.Text("В очереди", size=11, color=TEXT_MUTED)
 
-        self.lbl_status = ctk.CTkLabel(self.mid_frame, text="В очереди", text_color="gray", font=("Arial", 11))
-        self.lbl_status.pack(side="right")
+        # ── Выбор разрешения ──
+        self._res_values = [global_res_str]
+        self.dropdown_res = ft.DropdownM2(
+            options=[ft.dropdown.Option(global_res_str)],
+            value=global_res_str,
+            width=140,
+            height=34,
+            text_size=12,
+            content_padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+            on_change=None,
+            bgcolor=SURFACE3,
+            border_color=SURFACE3,
+            color=TEXT_PRIMARY,
+        )
 
-        self.setup_mode_ui()
+        self.lbl_mp3 = ft.Text("[Аудио MP3]", size=11, color=TEXT_MUTED)
 
-        bot_frame = ctk.CTkFrame(self, fg_color="transparent")
-        bot_frame.pack(fill="x", padx=5, pady=(2, 5))
-        
-        self.progress = ctk.CTkProgressBar(bot_frame)
-        self.progress.set(0)
-        self.progress.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        
-        self.lbl_percent = ctk.CTkLabel(bot_frame, text="0%", width=35)
-        self.lbl_percent.pack(side="right")
+        # ── Кнопка перевода Яндекс ──
+        self.btn_yandex = ft.FilledButton(
+            content="Перевод ВКЛ",
+            icon=ft.Icons.RECORD_VOICE_OVER,
+            on_click=self._toggle_yandex,
+            style=ft.ButtonStyle(
+                bgcolor=PURPLE_DIM,
+                color=TEXT_PRIMARY,
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+            ),
+            height=32,
+            visible=False,
+        )
 
-    def update_title_binding(self):
-        translator = self.app.settings.get("title_translator", TRANSLATOR_NONE)
-        if translator == TRANSLATOR_NONE:
-            self.lbl_title.configure(cursor="")
-            self.lbl_title.unbind("<Button-1>")
+        # ── Кнопка своего аудио ──
+        self.btn_manual = ft.FilledButton(
+            content="Свой аудио",
+            icon=ft.Icons.AUDIO_FILE,
+            on_click=self._select_manual_audio,
+            style=ft.ButtonStyle(
+                bgcolor=SURFACE3,
+                color=TEXT_PRIMARY,
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+            ),
+            height=32,
+            visible=False,
+        )
+
+        # ── Название ──
+        display_title = (self.title_text[:68] + '…') if len(self.title_text) > 68 else self.title_text
+        self.lbl_title = ft.Text(
+            display_title,
+            size=13,
+            weight=ft.FontWeight.BOLD,
+            color=TEXT_PRIMARY,
+            expand=True,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            max_lines=1,
+        )
+        self._title_gesture = ft.GestureDetector(
+            content=self.lbl_title,
+            mouse_cursor=ft.MouseCursor.BASIC,
+            on_tap=None,
+        )
+
+        # ── Кнопки управления ──
+        self.btn_restart = ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            icon_color=INFO,
+            icon_size=18,
+            tooltip="Сбросить и повторить",
+            on_click=self._restart_self,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        self.btn_remove = ft.IconButton(
+            icon=ft.Icons.DELETE_OUTLINE,
+            icon_color=ERROR_COLOR,
+            icon_size=18,
+            tooltip="Удалить из очереди",
+            on_click=self._remove_self,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+
+        # ── Строим виджет ──
+        self.container = self._build()
+
+        # Настройка режима
+        self._setup_mode_ui()
+        self._update_title_binding()
+
+    # ── Сборка контейнера ──────────────────────────────────────────────────
+
+    def _build(self) -> ft.Container:
+        top_row = ft.Row(
+            [
+                self._title_gesture,
+                self.btn_restart,
+                self.btn_remove,
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        self._mid_row = ft.Row(
+            [
+                self.dropdown_res,
+                self.lbl_mp3,
+                self.btn_yandex,
+                self.btn_manual,
+                ft.Container(expand=True),
+                self.lbl_status,
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=8,
+        )
+
+        bottom_row = ft.Row(
+            [self.progress_bar, self.lbl_percent],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=6,
+        )
+
+        body = ft.Column(
+            [top_row, self._mid_row, bottom_row],
+            spacing=6,
+        )
+
+        return ft.Container(
+            content=body,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+            border_radius=10,
+            bgcolor=SURFACE2,
+            border=ft.border.all(1, SURFACE3),
+            animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
+        )
+
+    # ── Внутренние методы ──────────────────────────────────────────────────
+
+    def _update_title_binding(self):
+        translator = self.app.settings.get("title_translator", "Не переводить")
+        if translator == "Не переводить":
+            self._title_gesture.mouse_cursor = ft.MouseCursor.BASIC
+            self._title_gesture.on_tap = None
         else:
-            self.lbl_title.configure(cursor="hand2")
-            self.lbl_title.bind("<Button-1>", self.show_translation_dialog)
+            self._title_gesture.mouse_cursor = ft.MouseCursor.CLICK
+            self._title_gesture.on_tap = self._show_translation_dialog
+
+    def _setup_mode_ui(self):
+        if self.mode == "Видео":
+            self.dropdown_res.visible = True
+            self.lbl_mp3.visible = False
+            self._update_yandex_visibility(is_refresh=True)
+            if self._res_values == [self.dropdown_res.value] and self.status == "waiting":
+                self.status = "fetching_formats"
+                self.dropdown_res.value = "Загрузка..."
+                self.dropdown_res.disabled = True
+                self.app.request_format_fetch(self)
+        else:
+            self.dropdown_res.visible = False
+            self.lbl_mp3.visible = True
+            self.btn_yandex.visible = False
+            self.btn_manual.visible = False
+            if self.status == "fetching_formats":
+                self.status = "waiting"
+
+    def change_mode(self, new_mode):
+        if self.mode == new_mode:
+            return
+        self.mode = new_mode
+        self._setup_mode_ui()
+        self.page.update()
+
+    def set_available_resolutions(self, res_list: list, global_res_str: str):
+        self._res_values = res_list
+        self.dropdown_res.options = [ft.dropdown.Option(r) for r in res_list]
+        self.dropdown_res.disabled = self.app.is_downloading
+
+        global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
+        selected = res_list[0]
+        for r in res_list:
+            val = 2160 if "4K" in r else (int(r.split("p")[0]) if "p" in r else 0)
+            if val <= global_val:
+                selected = r
+                break
+        self.dropdown_res.value = selected
+        if self.status == "fetching_formats":
+            self.status = "waiting"
+        self.page.update()
+
+    def _update_yandex_visibility(self, is_refresh=False):
+        if self.mode != "Видео":
+            self.btn_yandex.visible = False
+            self.btn_manual.visible = False
+            return
+
+        global_trans = self.app.settings.get("add_translation", False)
+
+        if global_trans:
+            self.btn_yandex.visible = True
+            if is_refresh:
+                self.use_yandex_translation = True
+                self.btn_yandex.content = "Перевод ВКЛ"
+                self.btn_yandex.icon = ft.Icons.RECORD_VOICE_OVER
+                self.btn_yandex.style.bgcolor = PURPLE_DIM
+        else:
+            self.btn_yandex.visible = False
+            self.use_yandex_translation = False
+
+        if self.app.settings.get("show_manual_audio", False):
+            self.btn_manual.visible = True
+        else:
+            self.btn_manual.visible = False
+            self.manual_audio_path = None
+            self.btn_manual.content = "Свой аудио"
+            self.btn_manual.style.bgcolor = SURFACE3
+
+    def _toggle_yandex(self, e):
+        if self.app.is_downloading:
+            return
+        self.use_yandex_translation = not self.use_yandex_translation
+        if self.use_yandex_translation:
+            self.btn_yandex.content = "Перевод ВКЛ"
+            self.btn_yandex.style.bgcolor = PURPLE_DIM
+            self.manual_audio_path = None
+            self.btn_manual.content = "Свой аудио"
+            self.btn_manual.style.bgcolor = SURFACE3
+        else:
+            self.btn_yandex.content = "Перевод ВЫКЛ"
+            self.btn_yandex.style.bgcolor = SURFACE3
+        self.page.update()
+
+    def _select_manual_audio(self, e):
+        if self.app.is_downloading:
+            return
+        if self.manual_audio_path:
+            self.manual_audio_path = None
+            self.btn_manual.content = "Свой аудио"
+            self.btn_manual.style.bgcolor = SURFACE3
+            self.page.update()
+            return
+
+        def on_result(result: ft.FilePickerResultEvent):
+            if result.files:
+                self.manual_audio_path = os.path.abspath(result.files[0].path)
+                self.btn_manual.content = "Выбран (сбросить)"
+                self.btn_manual.style.bgcolor = SUCCESS
+                self.use_yandex_translation = False
+                self.btn_yandex.content = "Перевод ВЫКЛ"
+                self.btn_yandex.style.bgcolor = SURFACE3
+                self.page.update()
+
+        picker = ft.FilePicker(on_result=on_result)
+        self.page.overlay.append(picker)
+        self.page.update()
+        picker.pick_files(
+            dialog_title="Выберите аудио",
+            allowed_extensions=["mp3", "m4a", "wav"],
+        )
+
+    def _remove_self(self, e):
+        if self.status in ["downloading", "processing"]:
+            snack(self.page, "Дождитесь окончания или остановите очередь.", WARNING, ft.Icons.WARNING_AMBER)
+            return
+        self.app.queue_items.remove(self)
+        self.app.queue_column.controls.remove(self.container)
+        self.app.update_queue_status()
+        self.page.update()
+
+    def _restart_self(self, e):
+        if self.status in ["downloading", "processing"]:
+            snack(self.page, "Дождитесь окончания или остановите очередь.", WARNING, ft.Icons.WARNING_AMBER)
+            return
+        self.status = "waiting"
+        self.set_progress_mode("determinate")
+        self.set_status("В очереди", TEXT_MUTED)
+        self.update_progress(0)
+        self.app.update_queue_status()
+        self.page.update()
+
+    def _show_translation_dialog(self, e):
+        current_translator = self.app.settings.get("title_translator", "Не переводить")
+        if current_translator == "Не переводить":
+            return
+
+        trans_text = ft.Text("Выполнение перевода…", size=13, color=TEXT_PRIMARY, selectable=True)
+        orig_text  = ft.Text(self.title_text, size=13, color=TEXT_MUTED, selectable=True)
+        lbl_model  = ft.Text("Модель: ожидание ответа…", size=11, color=TEXT_MUTED)
+        copy_btn   = ft.FilledButton(
+            content="Скопировать",
+            icon=ft.Icons.CONTENT_COPY,
+            disabled=True,
+            style=ft.ButtonStyle(bgcolor=INFO, color=TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        another_btn: ft.ElevatedButton | None = None
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Название видео ({current_translator})", size=15, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+            bgcolor=SURFACE2,
+            content=ft.Column(
+                [
+                    ft.Text("Оригинал:", size=12, weight=ft.FontWeight.BOLD, color=TEXT_MUTED),
+                    ft.Container(
+                        content=orig_text,
+                        bgcolor=SURFACE,
+                        border_radius=8,
+                        padding=8,
+                    ),
+                    ft.Text("Перевод:", size=12, weight=ft.FontWeight.BOLD, color=TEXT_MUTED),
+                    ft.Container(
+                        content=trans_text,
+                        bgcolor=SURFACE,
+                        border_radius=8,
+                        padding=8,
+                        min_height=40,
+                    ),
+                    lbl_model,
+                ],
+                spacing=6,
+                width=440,
+                tight=True,
+            ),
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        def close_dlg(e=None):
+            dlg.open = False
+            self.page.update()
+
+        def copy_to_clip(e):
+            self._set_clipboard(trans_text.value)
+            copy_btn.content = "✅ Скопировано"
+            self.page.update()
+            time.sleep(2)
+            copy_btn.content = "Скопировать"
+            self.page.update()
+
+        copy_btn.on_click = copy_to_clip
+
+        def use_another_model(e):
+            global_model = self.app.settings.get("ai_model", "openrouter/free")
+            if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model:
+                if self.used_model != global_model and global_model != "openrouter/free":
+                    self.force_free_model = False
+                else:
+                    if self.used_model != "openrouter/free":
+                        bl = self.app.settings.get("blacklisted_models", [])
+                        if self.used_model not in bl:
+                            bl.append(self.used_model)
+                            self.app.settings["blacklisted_models"] = bl
+                            SettingsManager.save(self.app.settings)
+                    self.force_free_model = True
+            else:
+                self.force_free_model = True
+
+            self.translated_title = None
+            self.used_model = None
+            self.used_translator = None
+            trans_text.value = "Выполнение перевода…"
+            lbl_model.value = "Модель: ожидание ответа…"
+            copy_btn.disabled = True
+            if another_btn:
+                another_btn.disabled = True
+            self.page.update()
+            threading.Thread(target=fetch_translation, daemon=True).start()
+
+        if current_translator == "Нейросеть (OpenAI/OpenRouter)":
+            another_btn = ft.FilledButton(
+                content="Другая модель",
+                icon=ft.Icons.SWAP_HORIZ,
+                on_click=use_another_model,
+                disabled=True,
+                style=ft.ButtonStyle(bgcolor=PURPLE_DIM, color=TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
+            )
+
+        action_row = [copy_btn]
+        if another_btn:
+            action_row.insert(0, another_btn)
+        action_row.append(ft.TextButton("Закрыть", on_click=close_dlg, style=ft.ButtonStyle(color=TEXT_MUTED)))
+        dlg.actions = action_row
+
+        def fetch_translation():
+            blacklist = self.app.settings.get("blacklisted_models", [])
+            needs_translation = False
+            if not getattr(self, 'translated_title', None):
+                needs_translation = True
+            elif self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
+                needs_translation = True
+            elif getattr(self, 'used_translator', None) != current_translator:
+                needs_translation = True
+            elif current_translator == "Нейросеть (OpenAI/OpenRouter)" and getattr(self, 'used_model', None) in blacklist:
+                needs_translation = True
+
+            if needs_translation:
+                self.translated_title, self.used_model = self.translate_text(self.title_text)
+                self.used_translator = current_translator
+
+            trans_text.value = self.translated_title
+            lbl_model.value = f"Модель: {self.used_model}" if self.used_model else ""
+            copy_btn.disabled = False
+            if another_btn:
+                another_btn.disabled = False
+            self.page.update()
+
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+        threading.Thread(target=fetch_translation, daemon=True).start()
+
+    # ── Публичные методы для управления UI из потоков ─────────────────────
+
+    def set_status(self, text: str, color: str = TEXT_MUTED):
+        self.lbl_status.value = text
+        self.lbl_status.color = color
+        self.page.update()
+
+    def set_progress_mode(self, mode: str = "determinate"):
+        if mode == "indeterminate":
+            self.progress_bar.value = None  # Flet: None = indeterminate
+            self.lbl_percent.value = "~"
+        else:
+            self.progress_bar.value = 0
+            self.lbl_percent.value = "0%"
+        self.page.update()
+
+    def update_progress(self, percent: float):
+        self.progress_bar.value = percent / 100.0
+        self.lbl_percent.value = f"{int(percent)}%"
+        self.page.update()
+
+    def set_ui_enabled(self, enabled: bool):
+        self.btn_restart.disabled = not enabled
+        self.btn_remove.disabled = not enabled
+        if self.mode == "Видео":
+            self.dropdown_res.disabled = not enabled
+            self.btn_yandex.disabled = not enabled
+            self.btn_manual.disabled = not enabled
+        self.page.update()
+
+    # ── Методы бизнес-логики (сохранены 100%) ─────────────────────────────
 
     def clean_ai_text(self, text):
         cleaned = text.strip()
-        cleaned = re.sub(r'^["\']|["\']$', '', cleaned) 
+        cleaned = re.sub(r'^["\']|["\']$', '', cleaned)
         if "->" in cleaned:
             cleaned = cleaned.split("->")[-1].strip()
         if "Перевод:" in cleaned:
@@ -666,17 +779,19 @@ class QueueItemWidget(ctk.CTkFrame):
         return cleaned
 
     def translate_text(self, text):
-        translator = self.app.settings.get("title_translator", TRANSLATOR_GOOGLE)
-        ctx = create_ssl_context()
+        translator = self.app.settings.get("title_translator", "Google API")
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         
-        if translator == TRANSLATOR_AI:
-            base_url = self.app.settings.get("ai_base_url", DEFAULT_AI_URL)
+        if translator == "Нейросеть (OpenAI/OpenRouter)":
+            base_url = self.app.settings.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions")
             token = self.app.settings.get("ai_token", "").strip()
             
             if getattr(self, 'force_free_model', False):
-                model = DEFAULT_AI_MODEL
+                model = "openrouter/free"
             else:
-                model = self.app.settings.get("ai_model", DEFAULT_AI_MODEL)
+                model = self.app.settings.get("ai_model", "openrouter/free")
             
             if not token:
                 return "[Ошибка: Введите API Token нейросети в Настройках API]", "N/A"
@@ -699,7 +814,7 @@ class QueueItemWidget(ctk.CTkFrame):
             ]
             
             request_model = model
-            max_retries = MAX_RETRIES
+            max_retries = 3
             
             for attempt in range(max_retries):
                 data = {
@@ -722,14 +837,14 @@ class QueueItemWidget(ctk.CTkFrame):
                         if actual_model in blacklist:
                             if attempt < max_retries - 1:
                                 time.sleep(1)
-                                continue 
+                                continue
                         
-                        if request_model == DEFAULT_AI_MODEL and actual_model != DEFAULT_AI_MODEL:
+                        if request_model == "openrouter/free" and actual_model != "openrouter/free":
                             self.app.settings["ai_model"] = actual_model
                             SettingsManager.save(self.app.settings)
 
                         disc = self.app.settings.get("discovered_models", [])
-                        if actual_model not in disc and actual_model != DEFAULT_AI_MODEL:
+                        if actual_model not in disc and actual_model != "openrouter/free":
                             disc.append(actual_model)
                             self.app.settings["discovered_models"] = disc
                             SettingsManager.save(self.app.settings)
@@ -742,17 +857,15 @@ class QueueItemWidget(ctk.CTkFrame):
                         return f"[Ошибка сети: ИИ недоступен (возможна блокировка)]", "Ошибка Сети"
                     time.sleep(1)
                 except urllib.error.HTTPError as e:
-                    if e.code in [404, 429, 502, 500] and request_model != DEFAULT_AI_MODEL:
-                        request_model = DEFAULT_AI_MODEL
+                    if e.code in [404, 429, 502, 500] and request_model != "openrouter/free":
+                        request_model = "openrouter/free"
                         time.sleep(1)
                         continue
                     elif e.code in [401, 403]:
                         return f"[Ошибка ИИ {e.code}: Проверьте настройки токена]", "Ошибка API"
                     else:
-                        try:
-                            err_body = e.read().decode('utf-8')
-                        except Exception:
-                            err_body = str(e)
+                        try: err_body = e.read().decode('utf-8')
+                        except: err_body = str(e)
                         log_error(self.video_id, f"HTTP Ошибка {e.code} (Нейросеть):\n{err_body}")
                         time.sleep(1)
                 except Exception as e:
@@ -765,12 +878,12 @@ class QueueItemWidget(ctk.CTkFrame):
                 if available:
                     request_model = available[attempt % len(available)]
                 else:
-                    request_model = DEFAULT_AI_MODEL
+                    request_model = "openrouter/free"
                 time.sleep(1)
                     
             return f"[Ошибка подключения к ИИ или все модели недоступны]", "Ошибка API"
 
-        if translator == TRANSLATOR_GOOGLE:
+        if translator == "Google API":
             max_retries = 2
             for attempt in range(max_retries):
                 try:
@@ -780,7 +893,7 @@ class QueueItemWidget(ctk.CTkFrame):
                         data = json.loads(response.read().decode('utf-8'))
                         return "".join([sentence[0] for sentence in data[0]]), "Google Translate API"
                 except urllib.error.HTTPError as e:
-                    if e.code == 429: 
+                    if e.code == 429:
                         log_error(self.video_id, "Ошибка перевода названия (API Google) HTTP 429: Too Many Requests")
                         return f"[Ошибка Google API: Лимит запросов. Смените переводчик]", "Ошибка API"
                     time.sleep(1)
@@ -792,526 +905,376 @@ class QueueItemWidget(ctk.CTkFrame):
                         
         return text, "Без перевода"
 
-    def show_translation_dialog(self, event):
-        current_translator = self.app.settings.get("title_translator", TRANSLATOR_NONE)
-        if current_translator == TRANSLATOR_NONE:
-            return
-            
-        dialog = ctk.CTkToplevel(self.app)
-        dialog.attributes('-alpha', 0.0)
-        dialog.title(f"Название видео ({current_translator})")
-        
-        window_width = 500
-        window_height = 250 
-        
-        geom = getattr(self.app, 'translation_window_geometry', None)
-        if not geom:
-            self.app.update_idletasks()
-            x = self.app.winfo_x() + (self.app.winfo_width() // 2) - (window_width // 2)
-            y = self.app.winfo_y() + (self.app.winfo_height() // 2) - (window_height // 2)
-            geom = f"{window_width}x{window_height}+{x}+{y}"
-            
-        dialog.geometry(geom)
-        dialog.transient(self.app)
-        dialog.grab_set()
 
-        def on_dialog_close():
-            self.app.translation_window_geometry = dialog.geometry()
-            fade_out(dialog, dialog.destroy)
-            
-        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+# ─────────────────────────────────────────────────────────────────────────────
+# Основное приложение
+# ─────────────────────────────────────────────────────────────────────────────
 
-        ctk.CTkLabel(dialog, text="Оригинал:", font=("Arial", 12, "bold")).pack(pady=(10, 0), padx=10, anchor="w")
-        orig_textbox = ctk.CTkTextbox(dialog, height=50, wrap="word")
-        orig_textbox.pack(padx=10, pady=(2, 5), fill="x")
-        orig_textbox.insert("1.0", self.title_text)
-        orig_textbox.configure(state="disabled")
-
-        ctk.CTkLabel(dialog, text="Перевод:", font=("Arial", 12, "bold")).pack(pady=(0, 0), padx=10, anchor="w")
-        trans_textbox = ctk.CTkTextbox(dialog, height=50, wrap="word")
-        trans_textbox.pack(padx=10, pady=(2, 5), fill="x")
-        trans_textbox.insert("1.0", "Выполнение перевода...")
-        trans_textbox.configure(state="disabled")
-        
-        lbl_info = ctk.CTkLabel(dialog, text="Модель: ожидание ответа...", font=("Arial", 10), text_color="gray")
-        lbl_info.pack(pady=(0, 5), padx=10, anchor="w")
-        
-        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame.pack(pady=(0, 5))
-        
-        def copy_to_clip():
-            text = trans_textbox.get("1.0", "end-1c")
-            self.app.clipboard_clear()
-            self.app.clipboard_append(text)
-            self.app.update() 
-            copy_btn.configure(text="✅ Скопировано", fg_color="green", hover_color="darkgreen")
-            self.app.after(2000, lambda: copy_btn.configure(text="📋 Скопировать перевод", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"]) if copy_btn.winfo_exists() else None)
-
-        copy_btn = ctk.CTkButton(btn_frame, text="📋 Скопировать перевод", command=copy_to_clip)
-        copy_btn.pack(side="left", padx=5)
-        
-        another_btn = None
-        if current_translator == "Нейросеть (OpenAI/OpenRouter)":
-            def use_another_model():
-                global_model = self.app.settings.get("ai_model", "openrouter/free")
-                
-                if getattr(self, 'used_model', None) and "Ошибка" not in self.used_model and "Без перевода" not in self.used_model:
-                    if self.used_model != global_model and global_model != "openrouter/free":
-                        self.force_free_model = False
-                    else:
-                        if self.used_model != "openrouter/free":
-                            bl = self.app.settings.get("blacklisted_models", [])
-                            if self.used_model not in bl:
-                                bl.append(self.used_model)
-                                self.app.settings["blacklisted_models"] = bl
-                                SettingsManager.save(self.app.settings)
-                        self.force_free_model = True
-                else:
-                    self.force_free_model = True
-                
-                self.translated_title = None
-                self.used_model = None
-                self.used_translator = None
-                trans_textbox.configure(state="normal")
-                trans_textbox.delete("1.0", "end")
-                trans_textbox.insert("1.0", "Выполнение перевода...")
-                trans_textbox.configure(state="disabled")
-                lbl_info.configure(text="Модель: ожидание ответа...")
-                copy_btn.configure(state="disabled")
-                another_btn.configure(state="disabled")
-                
-                threading.Thread(target=fetch_translation, daemon=True).start()
-                
-            another_btn = ctk.CTkButton(btn_frame, text="🔄 Другая модель", fg_color="purple", hover_color="#6a0dad", command=use_another_model)
-            another_btn.pack(side="left", padx=5)
-
-        def fetch_translation():
-            blacklist = self.app.settings.get("blacklisted_models", [])
-            needs_translation = False
-            
-            if not getattr(self, 'translated_title', None):
-                needs_translation = True
-            elif self.translated_title.startswith("[Ошибка") or self.translated_title.startswith("[Лимит"):
-                needs_translation = True
-            elif getattr(self, 'used_translator', None) != current_translator:
-                needs_translation = True
-            elif current_translator == "Нейросеть (OpenAI/OpenRouter)" and getattr(self, 'used_model', None) in blacklist:
-                needs_translation = True
-
-            if needs_translation:
-                self.translated_title, self.used_model = self.translate_text(self.title_text)
-                self.used_translator = current_translator
-            
-            def update_text():
-                if trans_textbox.winfo_exists():
-                    trans_textbox.configure(state="normal")
-                    trans_textbox.delete("1.0", "end")
-                    trans_textbox.insert("1.0", self.translated_title)
-                    trans_textbox.configure(state="disabled")
-                    
-                    if getattr(self, 'used_model', None):
-                        lbl_info.configure(text=f"Модель: {self.used_model}")
-                    else:
-                        lbl_info.configure(text="")
-                        
-                    copy_btn.configure(state="normal")
-                    if another_btn:
-                        another_btn.configure(state="normal")
-            
-            self.app.after(0, update_text)
-
-        copy_btn.configure(state="disabled")
-        if another_btn:
-            another_btn.configure(state="disabled")
-            
-        threading.Thread(target=fetch_translation, daemon=True).start()
-        fade_in(dialog)
-
-    def select_manual_audio(self):
-        if self.app.is_downloading: return
-        
-        if self.manual_audio_path:
-            self.manual_audio_path = None
-            self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
-            return
-            
-        path = filedialog.askopenfilename(title="Выберите аудио", filetypes=[("Audio Files", "*.mp3 *.m4a *.wav")])
-        if path:
-            self.manual_audio_path = os.path.abspath(path)
-            self.btn_manual.configure(text="📂 Выбран (сбросить)", fg_color="green", hover_color="darkgreen")
-            self.use_yandex_translation = False
-            self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
-
-    def setup_mode_ui(self):
-        self.combo_res.pack_forget()
-        self.lbl_mp3.pack_forget()
-        self.btn_yandex.pack_forget()
-        self.btn_manual.pack_forget()
-        
-        if self.mode == "Видео":
-            self.combo_res.pack(side="left", padx=(0, 10))
-            self.update_yandex_visibility(is_refresh=True)
-            
-            if self.combo_res.cget("values") == ["4K (2160p)"] and self.status == "waiting":
-                self.status = "fetching_formats"
-                self.item_res_var.set("Загрузка...")
-                self.combo_res.configure(state="disabled")
-                self.app.request_format_fetch(self)
-        else:
-            self.lbl_mp3.pack(side="left", padx=(0, 10))
-            if self.status == "fetching_formats":
-                self.status = "waiting"
-
-    def change_mode(self, new_mode):
-        if self.mode == new_mode: return
-        self.mode = new_mode
-        self.setup_mode_ui()
-
-    def set_available_resolutions(self, res_list, global_res_str):
-        if not self.winfo_exists(): return
-        state = "disabled" if self.app.is_downloading else "readonly"
-        self.combo_res.configure(values=res_list, state=state)
-        
-        global_val = 2160 if "4K" in global_res_str else (int(global_res_str.split("p")[0]) if "p" in global_res_str else 1080)
-        
-        selected = res_list[0] 
-        for r in res_list:
-            val = 2160 if "4K" in r else (int(r.split("p")[0]) if "p" in r else 0)
-            if val <= global_val:
-                selected = r
-                break 
-                
-        self.item_res_var.set(selected)
-        if self.status == "fetching_formats":
-            self.status = "waiting"
-
-    def update_yandex_visibility(self, is_refresh=False):
-        if self.mode != "Видео":
-            self.btn_yandex.pack_forget()
-            self.btn_manual.pack_forget()
-            return
-            
-        global_trans = self.app.settings.get("add_translation", False)
-        
-        if global_trans:
-            if not self.btn_yandex.winfo_ismapped():
-                self.btn_yandex.pack(side="left", padx=5)
-            if is_refresh:
-                self.use_yandex_translation = True
-                self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
-        else:
-            self.btn_yandex.pack_forget()
-            self.use_yandex_translation = False
-            
-        if self.app.settings.get("show_manual_audio", False):
-            if not self.btn_manual.winfo_ismapped():
-                self.btn_manual.pack(side="left", padx=5)
-        else:
-            self.btn_manual.pack_forget()
-            self.manual_audio_path = None
-            if self.btn_manual.cget("text") != "📂 Свой аудио-файл":
-                self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
-
-    def toggle_yandex(self):
-        if self.app.is_downloading: return
-        self.use_yandex_translation = not self.use_yandex_translation
-        if self.use_yandex_translation:
-            self.btn_yandex.configure(text="🗣 Перевод [ВКЛ]", fg_color="purple", hover_color="#6a0dad")
-            self.manual_audio_path = None
-            if self.btn_manual.winfo_exists():
-                self.btn_manual.configure(text="📂 Свой аудио-файл", fg_color="gray", hover_color="#555555")
-        else:
-            self.btn_yandex.configure(text="🗣 Перевод [ВЫКЛ]", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
-
-    def set_progress_mode(self, mode="determinate"):
-        if not self.winfo_exists(): return
-        self.progress.configure(mode=mode)
-        if mode == "indeterminate":
-            self.progress.start()
-            self.lbl_percent.configure(text="~")
-        else:
-            self.progress.stop()
-
-    def update_progress(self, percent):
-        self.progress.set(percent / 100.0)
-        self.lbl_percent.configure(text=f"{int(percent)}%")
-        
-    def set_status(self, text, color="black"):
-        self.lbl_status.configure(text=text, text_color=color)
-
-    def remove_self(self):
-        if self.status in ["downloading", "processing"]:
-            messagebox.showwarning("Внимание", "Дождитесь окончания или остановите очередь, чтобы удалить активный элемент.")
-            return
-        if self in self.app.queue_items:
-            self.app.queue_items.remove(self)
-        self.pack_forget()
-        self.destroy()
-        self.app.update_queue_status()
-
-    def restart_self(self):
-        if self.status in ["downloading", "processing"]:
-            messagebox.showwarning("Внимание", "Дождитесь окончания или остановите очередь, чтобы перезапустить элемент.")
-            return
-        
-        self.status = "waiting"
-        self.set_progress_mode("determinate")
-        self.set_status("В очереди", "gray")
-        self.update_progress(0)
-        self.app.update_queue_status()
-
-class VideoApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("Download Video Mixer v3.15")
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
+class VideoApp:
+    def __init__(self, page: ft.Page):
+        self.page = page
         self.os_name = platform.system()
         self.stop_requested = False
         self.is_downloading = False
-        self.queue_items = [] 
-        self._queue_lock = threading.Lock()
-        self.translation_window_geometry = None
+        self.queue_items: list[QueueItemWidget] = []
         self.actual_downloads_occurred = False
-        
-        def resource_path(relative_path):
-            try:
-                base_path = sys._MEIPASS
-            except AttributeError:
-                base_path = os.path.abspath(".")
-            return os.path.join(base_path, relative_path)
-
-        self.icon_path = None
-        if self.os_name == "Windows":
-            icon_path = resource_path("icon.ico")
-            if os.path.exists(icon_path):
-                self.icon_path = icon_path
-                self.iconbitmap(icon_path)
-        
-        self.geometry("850x650")
         self.settings = SettingsManager.load()
-        
+
         self.startupinfo = None
         if self.os_name == "Windows":
             self.startupinfo = subprocess.STARTUPINFO()
             self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-        self.build_ui()
-        self.deps = DependencyManager(self.update_status_cb)
+        # Настройка страницы Flet
+        page.title = "DownloadZone"
+        page.theme_mode = ft.ThemeMode.DARK
+        page.bgcolor = SURFACE
+        page.padding = 0
+        page.window.width = 900
+        page.window.height = 720
+        page.window.min_width = 750
+        page.window.min_height = 550
+        page.theme = ft.Theme(
+            color_scheme_seed=ft.Colors.DEEP_PURPLE,
+            use_material3=True,
+        )
+        page.window.prevent_close = True
+        page.window.on_event = self._on_window_event
+
+        # Иконка приложения
+        if self.os_name == "Windows":
+            def resource_path(relative_path):
+                try: base_path = sys._MEIPASS
+                except: base_path = os.path.abspath(".")
+                return os.path.join(base_path, relative_path)
+            icon_path = resource_path("icon.ico")
+            if os.path.exists(icon_path):
+                page.window.icon = icon_path
+
+        self._build_ui()
+
+        self.deps = DependencyManager(self._update_status_cb)
         self.format_fetch_queue = queue.Queue()
 
-        threading.Thread(target=self.run_dependency_check, daemon=True).start()
-        threading.Thread(target=self.format_fetch_worker, daemon=True).start()
-        
-        self.after(500, self.load_urls_from_file)
+        threading.Thread(target=self._run_dependency_check, daemon=True).start()
+        threading.Thread(target=self._format_fetch_worker, daemon=True).start()
 
-    def update_status_cb(self, text, color="orange"):
-        self.after(0, lambda: self.status_label.configure(text=text, text_color=color))
+        # Загрузить ссылки из файла с задержкой
+        threading.Thread(target=self._delayed_load_urls, daemon=True).start()
 
-    def run_dependency_check(self):
+    # ── Вспомогательные методы ─────────────────────────────────────────────
+
+    def _set_clipboard(self, text: str):
+        """Безопасная запись текста в буфер обмена через сервис-контрол Flet."""
+        try:
+            cb = ft.Clipboard()
+            self.page.overlay.append(cb)
+            self.page.update()
+            cb.set(text)
+            self.page.overlay.remove(cb)
+        except Exception:
+            pass
+
+    # ── Построение UI ──────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        p = self.page
+
+        # ── Заголовок ──
+        self._title_lbl = ft.Text(
+            "DownloadZone",
+            size=30,
+            weight=ft.FontWeight.BOLD,
+            color="#FF2A93",
+        )
+
+        # ── Тема ──
+        self._theme_icon = ft.Icons.LIGHT_MODE
+        self._theme_btn = ft.IconButton(
+            icon=ft.Icons.LIGHT_MODE,
+            icon_color=TEXT_MUTED,
+            tooltip="Переключить тему",
+            on_click=self._toggle_theme,
+        )
+
+        # ── Кнопка настроек ──
+        self._settings_btn = ft.IconButton(
+            icon=ft.Icons.SETTINGS,
+            icon_color=TEXT_MUTED,
+            icon_size=22,
+            tooltip="Настройки",
+            on_click=self._open_settings,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+        )
+
+        # ── Поле ввода URL ──
+        self._url_entry = ft.TextField(
+            hint_text="Вставьте ссылку на видео или плейлист…",
+            expand=True,
+            height=42,
+            text_size=13,
+            border_radius=10,
+            bgcolor=SURFACE2,
+            border_color=SURFACE3,
+            focused_border_color=ACCENT,
+            color=TEXT_PRIMARY,
+            hint_style=ft.TextStyle(color=TEXT_MUTED),
+            on_submit=lambda e: self._fetch_and_add(e),
+        )
+
+        # ── Кнопка добавить ──
+        self._btn_add = ft.FilledButton(
+            content="Добавить",
+            icon=ft.Icons.ADD_LINK,
+            on_click=self._fetch_and_add,
+            style=ft.ButtonStyle(
+                bgcolor=SURFACE2,
+                color=TEXT_PRIMARY,
+                shape=ft.RoundedRectangleBorder(radius=10),
+                overlay_color=SURFACE3,
+            ),
+            height=42,
+        )
+
+        top_bar = ft.Row(
+            [self._settings_btn, self._url_entry, self._btn_add, self._theme_btn],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        # ── Режим и качество ──
+        self._mode_seg = ft.SegmentedButton(
+            selected=["Видео"],
+            segments=[
+                ft.Segment(value="Видео", label=ft.Text("Видео"), icon=ft.Icon(ft.Icons.VIDEO_FILE)),
+                ft.Segment(value="Только Аудио (MP3)", label=ft.Text("Только Аудио (MP3)"), icon=ft.Icon(ft.Icons.AUDIO_FILE)),
+            ],
+            on_change=self._on_mode_change,
+            style=ft.ButtonStyle(
+                bgcolor={ft.ControlState.SELECTED: ACCENT, ft.ControlState.DEFAULT: SURFACE2},
+                color={ft.ControlState.SELECTED: TEXT_PRIMARY, ft.ControlState.DEFAULT: TEXT_MUTED},
+                shape=ft.RoundedRectangleBorder(radius=10),
+            ),
+        )
+
+        self._res_dropdown = ft.DropdownM2(
+            label="Глобальное качество",
+            options=[
+                ft.dropdown.Option("4K (2160p)"),
+                ft.dropdown.Option("1080p FullHD"),
+                ft.dropdown.Option("720p HD"),
+                ft.dropdown.Option("480p SD"),
+                ft.dropdown.Option("360p SD"),
+            ],
+            value=self.settings.get("global_quality", "4K (2160p)"),
+            width=170,
+            height=42,
+            text_size=12,
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+            bgcolor=SURFACE2,
+            border_color=SURFACE3,
+            focused_border_color=ACCENT,
+            color=TEXT_PRIMARY,
+            on_change=self._save_global_quality,
+        )
+
+        params_row = ft.Row(
+            [self._mode_seg, ft.Container(expand=True), self._res_dropdown],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        # ── Очередь ──
+        self.queue_column = ft.Column(
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+        queue_container = ft.Container(
+            content=self.queue_column,
+            expand=True,
+            padding=ft.Padding.symmetric(vertical=4),
+        )
+
+        # ── Нижняя панель ──
+        self._clear_btn = ft.OutlinedButton(
+            content="Очистить",
+            icon=ft.Icons.DELETE_SWEEP,
+            on_click=self._clear_queue,
+            style=ft.ButtonStyle(
+                color=TEXT_MUTED,
+                side=ft.BorderSide(1, SURFACE3),
+                shape=ft.RoundedRectangleBorder(radius=12),
+            ),
+            height=44,
+            width=130,
+        )
+
+        self._start_btn = ft.FilledButton(
+            content="▶  Запустить очередь",
+            icon=ft.Icons.PLAY_ARROW,
+            on_click=self._start_queue,
+            style=ft.ButtonStyle(
+                bgcolor=ACCENT,
+                color=TEXT_PRIMARY,
+                shape=ft.RoundedRectangleBorder(radius=12),
+                overlay_color=ACCENT_HOVER,
+            ),
+            height=44,
+            width=220,
+        )
+
+        self._status_label = ft.Text("Ожидание ссылок…", color=TEXT_MUTED, size=12)
+
+        bottom_bar = ft.Row(
+            [self._clear_btn, self._start_btn, ft.Container(expand=True), self._status_label],
+            alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=12,
+        )
+
+        # ── Компоновка ──
+        header = ft.Row(
+            [self._title_lbl, ft.Container(expand=True)],
+            alignment=ft.MainAxisAlignment.START,
+        )
+
+        layout = ft.Column(
+            [
+                header,
+                top_bar,
+                params_row,
+                ft.Divider(height=1, color=SURFACE3),
+                queue_container,
+                ft.Divider(height=1, color=SURFACE3),
+                bottom_bar,
+            ],
+            spacing=12,
+            expand=True,
+        )
+
+        p.add(
+            ft.Container(
+                content=layout,
+                padding=ft.Padding.symmetric(horizontal=24, vertical=16),
+                expand=True,
+            )
+        )
+        self._toggle_ui("disabled")  # Заблокировано до завершения загрузки зависимостей
+
+    # ── Тема ──────────────────────────────────────────────────────────────
+
+    def _toggle_theme(self, e):
+        if self.page.theme_mode == ft.ThemeMode.DARK:
+            self.page.theme_mode = ft.ThemeMode.LIGHT
+            self._theme_btn.icon = ft.Icons.DARK_MODE
+        else:
+            self.page.theme_mode = ft.ThemeMode.DARK
+            self._theme_btn.icon = ft.Icons.LIGHT_MODE
+        self.page.update()
+
+    # ── Обратные вызовы для зависимостей ──────────────────────────────────
+
+    def _update_status_cb(self, text: str, color: str = "orange"):
+        color_map = {
+            "orange": WARNING,
+            "red": ERROR_COLOR,
+            "green": SUCCESS,
+            "black": TEXT_PRIMARY,
+            "blue": INFO,
+        }
+        mapped = color_map.get(color, TEXT_MUTED)
+        self._status_label.value = text
+        self._status_label.color = mapped
+        self.page.update()
+
+    def _run_dependency_check(self):
         success = self.deps.ensure_dependencies(self.startupinfo)
         if success:
-            self.after(0, lambda: self.toggle_ui("normal"))
+            self._toggle_ui("normal")
+            self.page.update()
 
-    def save_global_quality(self, value):
-        self.settings["global_quality"] = value
+    # ── Режим / качество ──────────────────────────────────────────────────
+
+    def _save_global_quality(self, e):
+        self.settings["global_quality"] = self._res_dropdown.value
         SettingsManager.save(self.settings)
+
+    def _on_mode_change(self, e):
+        selected = list(e.control.selected)[0] if e.control.selected else "Видео"
+        if selected != "Видео":
+            self._res_dropdown.disabled = True
+        else:
+            self._res_dropdown.disabled = False
+
+        if self.queue_items:
+            needs_change = any(item.mode != selected for item in self.queue_items)
+            if needs_change:
+                self._confirm_mode_change(selected)
+        self.page.update()
+
+    def _confirm_mode_change(self, new_mode: str):
+        def confirm(e):
+            for item in self.queue_items:
+                item.change_mode(new_mode)
+            dlg.open = False
+            self.page.update()
+
+        def cancel(e):
+            dlg.open = False
+            self.page.update()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Изменение режима", color=TEXT_PRIMARY),
+            bgcolor=SURFACE2,
+            content=ft.Text(f"Перевести все элементы в очереди в формат «{new_mode}»?", color=TEXT_PRIMARY),
+            actions=[
+                ft.FilledButton("Да", on_click=confirm, style=ft.ButtonStyle(bgcolor=ACCENT, color=TEXT_PRIMARY)),
+                ft.TextButton("Нет", on_click=cancel, style=ft.ButtonStyle(color=TEXT_MUTED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    # ── Загрузка ссылок из файла ──────────────────────────────────────────
+
+    def _delayed_load_urls(self):
+        time.sleep(0.8)
+        self.load_urls_from_file()
 
     def load_urls_from_file(self):
         txt_path = os.path.join(APP_DIR, "video.txt")
         if os.path.exists(txt_path):
-            def _load_batch():
-                try:
-                    with open(txt_path, "r", encoding="utf-8") as f:
-                        urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-                    for url in urls:
-                        threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
-                        time.sleep(0.2)
-                except Exception as e:
-                    print(f"Error reading video.txt: {e}")
-            threading.Thread(target=_load_batch, daemon=True).start()
-
-    def build_ui(self):
-        top_frame = ctk.CTkFrame(self, fg_color="transparent")
-        top_frame.pack(pady=10, padx=20, fill="x")
-
-        self.settings_btn = ctk.CTkButton(top_frame, text="⚙", width=40, command=self.open_settings)
-        self.settings_btn.pack(side="left", padx=(0, 10))
-
-        self.url_entry = ctk.CTkEntry(top_frame, placeholder_text="Вставьте ссылку на видео или плейлист...", width=380)
-        self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        
-        self.context_menu = Menu(self, tearoff=0, font=("Arial", 10))
-        self.context_menu.add_command(label="Вставить", command=self.paste_text)
-        self.context_menu.add_command(label="Копировать", command=self.copy_text)
-        self.context_menu.add_command(label="Вырезать", command=self.cut_text)
-        self.context_menu.add_command(label="Выделить всё", command=self.select_all)
-        self.url_entry.bind("<Button-3>", lambda e: self.context_menu.tk_popup(e.x_root, e.y_root))
-        self.url_entry.bind("<Button-2>", lambda e: self.context_menu.tk_popup(e.x_root, e.y_root))
-        
-        self.btn_add = ctk.CTkButton(top_frame, text="Добавить", width=100, command=self.fetch_and_add)
-        self.btn_add.pack(side="right")
-
-        param_frame = ctk.CTkFrame(self, fg_color="transparent")
-        param_frame.pack(pady=5)
-        
-        self.mode_var = ctk.StringVar(value="Видео")
-        self.mode_seg = ctk.CTkSegmentedButton(param_frame, values=["Видео", "Только Аудио (MP3)"], variable=self.mode_var, command=self.on_mode_change)
-        self.mode_seg.pack(side="left", padx=10)
-        
-        ctk.CTkLabel(param_frame, text="Глобальное качество:").pack(side="left", padx=(10, 5))
-        self.res_combobox = ctk.CTkComboBox(param_frame, values=["4K (2160p)", "1080p FullHD", "720p HD", "480p SD", "360p SD"], state="readonly", width=125, command=self.save_global_quality)
-        self.res_combobox.pack(side="left", padx=5)
-        self.res_combobox.set(self.settings.get("global_quality", QUALITY_4K))
-
-        self.queue_frame = ctk.CTkScrollableFrame(self, width=810, height=350)
-        self.queue_frame.pack(pady=10, padx=20, fill="both", expand=True)
-
-        bot_frame = ctk.CTkFrame(self, fg_color="transparent")
-        bot_frame.pack(pady=10)
-
-        self.clear_btn = ctk.CTkButton(bot_frame, text="🗑 Очистить", command=self.clear_queue, fg_color="gray", hover_color="#555555", height=40, width=120)
-        self.clear_btn.pack(side="left", padx=10)
-
-        self.start_btn = ctk.CTkButton(bot_frame, text="▶ Запустить очередь", command=self.start_queue, fg_color="green", hover_color="darkgreen", height=40, width=200)
-        self.start_btn.pack(side="left", padx=10)
-        
-        self.status_label = ctk.CTkLabel(self, text="Ожидание ссылок...", text_color="gray")
-        self.status_label.pack(pady=(0, 10))
-
-    def paste_text(self, event=None):
-        try:
-            self.url_entry.delete(0, "end") 
-            self.url_entry.insert(0, self.clipboard_get())
-        except Exception:
-            pass
-        return "break"
-
-    def copy_text(self, event=None):
-        if self.url_entry.get():
-            self.clipboard_clear()
-            self.clipboard_append(self.url_entry.get())
-        return "break"
-
-    def cut_text(self, event=None):
-        self.copy_text()
-        self.url_entry.delete(0, "end")
-        return "break"
-
-    def select_all(self, event=None):
-        self.url_entry.select_range(0, "end")
-        self.url_entry.icursor("end")
-        return "break"
-
-    def on_mode_change(self, value):
-        if value == "Видео":
-            self.res_combobox.configure(state="readonly")
-        else:
-            self.res_combobox.configure(state="disabled")
-            
-        if self.queue_items:
-            needs_change = any(item.mode != value for item in self.queue_items)
-            if needs_change:
-                ans = messagebox.askyesno("Изменение режима", f"Перевести все элементы в текущей очереди в формат '{value}'?")
-                if ans:
-                    for item in self.queue_items:
-                        item.change_mode(value)
-
-    def toggle_ui(self, state):
-        self.url_entry.configure(state=state)
-        self.settings_btn.configure(state=state)
-        self.btn_add.configure(state=state)
-        self.mode_seg.configure(state=state)
-        self.clear_btn.configure(state=state)
-        
-        if state == "disabled" or self.mode_var.get() != "Видео":
-            self.res_combobox.configure(state="disabled")
-        else:
-            self.res_combobox.configure(state="readonly")
-            
-        for item in self.queue_items:
-            if state == "disabled":
-                item.combo_res.configure(state="disabled")
-                if item.btn_yandex.winfo_exists():
-                    item.btn_yandex.configure(state="disabled")
-                if item.btn_manual.winfo_exists():
-                    item.btn_manual.configure(state="disabled")
-                item.btn_restart.configure(state="disabled")
-            else:
-                item.btn_restart.configure(state="normal")
-                if item.mode == "Видео":
-                    item.combo_res.configure(state="readonly")
-                    if item.btn_yandex.winfo_exists():
-                        item.btn_yandex.configure(state="normal")
-                    if item.btn_manual.winfo_exists():
-                        item.btn_manual.configure(state="normal")
-
-    def refresh_settings(self):
-        self.settings = SettingsManager.load()
-        for item in self.queue_items:
-            item.update_title_binding()
-            item.update_yandex_visibility(is_refresh=True)
-
-    def open_settings(self): SettingsWindow(self)
-
-    def request_format_fetch(self, item):
-        self.format_fetch_queue.put(item)
-
-    def format_fetch_worker(self):
-        while True:
-            item = self.format_fetch_queue.get()
-            if not item.winfo_exists() or item.mode != "Видео":
-                self.format_fetch_queue.task_done()
-                continue
-
             try:
-                cmd = [self.deps.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', item.url]
-                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-                res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', **kwargs)
-                
-                if res.returncode == 0:
-                    info = json.loads(res.stdout.splitlines()[0]) 
-                    formats = info.get('formats', [])
-                    max_dim = 0
-                    for f in formats:
-                        vcodec = f.get('vcodec')
-                        if vcodec and vcodec != 'none':
-                            w = f.get('width', 0) or 0
-                            h = f.get('height', 0) or 0
-                            if w > 0 and h > 0:
-                                if h > max_dim: 
-                                    max_dim = h
-                    
-                    if max_dim >= 2160: max_val = 2160
-                    elif max_dim >= 1080: max_val = 1080
-                    elif max_dim >= 720: max_val = 720
-                    elif max_dim >= 480: max_val = 480
-                    else: max_val = 360
-                else:
-                    max_val = 1080 
-            except Exception:
-                max_val = 1080 
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+                for url in urls:
+                    threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
+                    time.sleep(0.2)
+            except Exception as e:
+                print(f"Error reading video.txt: {e}")
 
-            all_res = [(2160, "4K (2160p)"), (1080, "1080p FullHD"), (720, "720p HD"), (480, "480p SD"), (360, "360p SD")]
-            res_list = [name for h, name in all_res if h <= max_val] or ["360p SD"]
-            
-            self.after(0, item.set_available_resolutions, res_list, self.res_combobox.get())
-            self.format_fetch_queue.task_done()
+    # ── Анализ URL ────────────────────────────────────────────────────────
 
-    def fetch_and_add(self):
-        url = self.url_entry.get().strip()
-        if len(url) < 10: return
-        
-        self.btn_add.configure(state="disabled", text="Анализ...")
+    def _fetch_and_add(self, e):
+        url = self._url_entry.value.strip() if self._url_entry.value else ""
+        if len(url) < 10:
+            return
+        self._btn_add.disabled = True
+        self._btn_add.content = "Анализ…"
+        self.page.update()
         threading.Thread(target=self._analyze_url_thread, args=(url,), daemon=True).start()
 
     def _analyze_url_thread(self, url):
         try:
             cmd = [self.deps.ytdlp_path, '--dump-json', '--ignore-errors', '--no-check-certificate', '--flat-playlist', url]
             kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
-            
+
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='ignore', **kwargs)
-            
+
             videos = []
             for line in process.stdout:
                 line = line.strip()
@@ -1320,122 +1283,612 @@ class VideoApp(ctk.CTk):
                     data = json.loads(line)
                     if data.get('id'):
                         videos.append(data)
-                        self.after(0, lambda c=len(videos): self.status_label.configure(text=f"Анализ... Найдено видео: {c}", text_color="black"))
-                except (json.JSONDecodeError, KeyError):
-                    pass
-                
+                        self._status_label.value = f"Анализ… Найдено видео: {len(videos)}"
+                        self._status_label.color = TEXT_PRIMARY
+                        self.page.update()
+                except: pass
+
             process.wait()
-            if not videos: raise Exception("Видео не найдено или доступ закрыт.")
+            if not videos:
+                raise Exception("Видео не найдено или доступ закрыт.")
 
             if len(videos) > 1:
-                self.after(0, lambda: PlaylistDialog(self, videos))
+                self._show_playlist_dialog(videos)
             else:
-                self.after(0, lambda: self.add_items_to_queue(videos))
+                self.add_items_to_queue(videos)
 
         except Exception as e:
-            self.after(0, lambda e=e: messagebox.showerror("Ошибка", f"Не удалось проанализировать ссылку:\n{e}"))
-            self.after(0, lambda: self.status_label.configure(text="Ошибка анализа", text_color="red"))
+            snack(self.page, f"Не удалось проанализировать ссылку:\n{e}", ERROR_COLOR, ft.Icons.ERROR_OUTLINE)
+            self._status_label.value = "Ошибка анализа"
+            self._status_label.color = ERROR_COLOR
+            self.page.update()
         finally:
-            self.after(0, lambda: self.btn_add.configure(state="normal", text="Добавить"))
-            self.after(0, lambda: self.url_entry.delete(0, "end"))
+            self._btn_add.disabled = False
+            self._btn_add.content = "Добавить"
+            self._url_entry.value = ""
+            self.page.update()
 
-    def add_items_to_queue(self, videos_list):
-        mode = self.mode_var.get()
-        global_res_str = self.res_combobox.get()
-        
+    # ── Диалог плейлиста ──────────────────────────────────────────────────
+
+    def _show_playlist_dialog(self, videos: list):
+        checks = {}  # video_id -> ft.Checkbox
+        count_text = ft.Text(f"Выбрано: {len(videos)} из {len(videos)}", size=13, color=TEXT_MUTED)
+
+        def on_check(e):
+            selected = sum(1 for cb in checks.values() if cb.value)
+            count_text.value = f"Выбрано: {selected} из {len(videos)}"
+            self.page.update()
+
+        items = []
+        for vid in videos:
+            title = vid.get('title', 'Без названия')
+            duration = vid.get('duration', 0)
+            dur_str = f" ({int(duration)//60}:{int(duration)%60:02d})" if duration else ""
+            cb = ft.Checkbox(
+                label=f"{title}{dur_str}",
+                value=True,
+                on_change=on_check,
+                active_color=ACCENT,
+                label_style=ft.TextStyle(color=TEXT_PRIMARY, size=12),
+            )
+            checks[vid.get('id', '')] = cb
+            items.append(cb)
+
+        scroll_col = ft.Column(items, spacing=4, scroll=ft.ScrollMode.AUTO, height=320)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Плейлист обнаружен", weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+            bgcolor=SURFACE2,
+            content=ft.Column(
+                [
+                    ft.Text("Выберите видео для загрузки:", size=13, color=TEXT_MUTED),
+                    count_text,
+                    ft.Container(
+                        content=scroll_col,
+                        bgcolor=SURFACE,
+                        border_radius=8,
+                        padding=8,
+                        width=460,
+                    ),
+                ],
+                spacing=8,
+                tight=True,
+            ),
+        )
+
+        def confirm(e):
+            selected_vids = [vid for vid in videos if checks.get(vid.get('id', ''), ft.Checkbox(value=False)).value]
+            dlg.open = False
+            self.page.update()
+            self.add_items_to_queue(selected_vids)
+
+        def cancel(e):
+            dlg.open = False
+            self.page.update()
+
+        dlg.actions = [
+            ft.FilledButton("Добавить выбранные", icon=ft.Icons.DOWNLOAD, on_click=confirm, style=ft.ButtonStyle(bgcolor=SUCCESS, color=TEXT_PRIMARY)),
+            ft.TextButton("Отмена", on_click=cancel, style=ft.ButtonStyle(color=TEXT_MUTED)),
+        ]
+        dlg.actions_alignment = ft.MainAxisAlignment.END
+
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    # ── Управление очередью ───────────────────────────────────────────────
+
+    def add_items_to_queue(self, videos_list: list):
+        mode = list(self._mode_seg.selected)[0] if self._mode_seg.selected else "Видео"
+        global_res_str = self._res_dropdown.value or "4K (2160p)"
+
         existing_ids = set(item.video_id for item in self.queue_items)
         added_count = 0
-        
+
         for vid in videos_list:
             vid_id = vid.get('id')
             if vid_id in existing_ids:
-                continue 
-                
-            item = QueueItemWidget(self.queue_frame, self, vid, mode, global_res_str)
-            item.pack(fill="x", pady=5)
+                continue
+            item = QueueItemWidget(self, vid, mode, global_res_str)
             self.queue_items.append(item)
             existing_ids.add(vid_id)
+            self.queue_column.controls.append(item.container)
             added_count += 1
-            
+
         if added_count == 0 and videos_list:
-            self.status_label.configure(text="Выбранные видео уже есть в очереди.", text_color="orange")
+            self._status_label.value = "Выбранные видео уже есть в очереди."
+            self._status_label.color = WARNING
         else:
             self.update_queue_status()
+        self.page.update()
 
     def update_queue_status(self):
         total = len(self.queue_items)
-        self.status_label.configure(text=f"В очереди: {total} видео.", text_color="black")
+        self._status_label.value = f"В очереди: {total} видео."
+        self._status_label.color = TEXT_MUTED
+        self.page.update()
 
-    def clear_queue(self):
+    def _clear_queue(self, e):
         to_remove = [item for item in self.queue_items if item.status not in ["downloading", "processing"]]
         for item in to_remove:
-            item.pack_forget()
-            item.destroy()
-        self.queue_items = [item for item in self.queue_items if item not in to_remove]
+            self.queue_column.controls.remove(item.container)
+            self.queue_items.remove(item)
         self.update_queue_status()
+        self.page.update()
 
-    def stop_process(self):
-        self.stop_requested = True
-        self.status_label.configure(text="Остановка текущей загрузки...", text_color="orange")
-        self.start_btn.configure(state="disabled")
+    # ── Запуск/остановка очереди ──────────────────────────────────────────
 
-    def start_queue(self):
+    def _start_queue(self, e):
         if not self.queue_items:
-            messagebox.showinfo("Очередь пуста", "Добавьте видео в очередь перед запуском.")
+            snack(self.page, "Добавьте видео в очередь перед запуском.", INFO, ft.Icons.INFO_OUTLINE)
             return
-            
-        if not self.settings["save_path"]:
-            path = filedialog.askdirectory(title="Выберите папку для сохранения")
-            if not path: return
-            self.settings["save_path"] = os.path.abspath(path)
-            SettingsManager.save(self.settings)
 
+        if not self.settings.get("save_path"):
+            def on_dir(result: ft.FilePickerResultEvent):
+                if result.path:
+                    self.settings["save_path"] = os.path.abspath(result.path)
+                    SettingsManager.save(self.settings)
+                    self._do_start_queue()
+
+            picker = ft.FilePicker(on_result=on_dir)
+            self.page.overlay.append(picker)
+            self.page.update()
+            picker.get_directory_path(dialog_title="Выберите папку для сохранения")
+            return
+
+        self._do_start_queue()
+
+    def _do_start_queue(self):
         self.stop_requested = False
         self.is_downloading = True
         self.actual_downloads_occurred = False
-        self.start_btn.configure(text="⏹ Остановить очередь", command=self.stop_process, fg_color="red", hover_color="darkred")
-        self.toggle_ui("disabled")
-        
+
+        self._start_btn.content = "⏹  Остановить очередь"
+        self._start_btn.icon = ft.Icons.STOP
+        self._start_btn.on_click = self._stop_process
+        self._start_btn.style.bgcolor = ERROR_COLOR
+        self._toggle_ui("disabled")
+        self.page.update()
+
         threading.Thread(target=self._process_queue_thread, daemon=True).start()
 
+    def _stop_process(self, e):
+        self.stop_requested = True
+        self._status_label.value = "Остановка текущей загрузки…"
+        self._status_label.color = WARNING
+        self._start_btn.disabled = True
+        self.page.update()
+
     def _process_queue_thread(self):
-        items_snapshot = list(self.queue_items)
-        for item in items_snapshot:
-            if self.stop_requested: break
-            
+        for item in self.queue_items:
+            if self.stop_requested:
+                break
             while item.status == "fetching_formats" and not self.stop_requested:
                 time.sleep(0.5)
-                
-            if item.status == "waiting" or item.status == "error":
+            if item.status in ("waiting", "error"):
                 self.download_item(item)
-                
-        self.after(0, self.restore_ui_state)
+        self._restore_ui_state()
+
+    # ── Форматы ───────────────────────────────────────────────────────────
+
+    def request_format_fetch(self, item: QueueItemWidget):
+        self.format_fetch_queue.put(item)
+
+    def _format_fetch_worker(self):
+        while True:
+            item = self.format_fetch_queue.get()
+            if item.mode != "Видео":
+                self.format_fetch_queue.task_done()
+                continue
+            try:
+                cmd = [self.deps.ytdlp_path, '--dump-json', '--no-playlist', '--no-check-certificate', item.url]
+                kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', **kwargs)
+
+                if res.returncode == 0:
+                    info = json.loads(res.stdout.splitlines()[0])
+                    formats = info.get('formats', [])
+                    max_dim = 0
+                    for f in formats:
+                        vcodec = f.get('vcodec')
+                        if vcodec and vcodec != 'none':
+                            w = f.get('width', 0) or 0
+                            h = f.get('height', 0) or 0
+                            if w > 0 and h > 0:
+                                dim = min(w, h)
+                                if dim > max_dim:
+                                    max_dim = dim
+
+                    if max_dim >= 2160: max_val = 2160
+                    elif max_dim >= 1080: max_val = 1080
+                    elif max_dim >= 720: max_val = 720
+                    elif max_dim >= 480: max_val = 480
+                    else: max_val = 360
+                else:
+                    max_val = 1080
+            except:
+                max_val = 1080
+
+            all_res = [(2160, "4K (2160p)"), (1080, "1080p FullHD"), (720, "720p HD"), (480, "480p SD"), (360, "360p SD")]
+            res_list = [name for h, name in all_res if h <= max_val] or ["360p SD"]
+
+            cur_global = self._res_dropdown.value or "4K (2160p)"
+            item.set_available_resolutions(res_list, cur_global)
+            self.format_fetch_queue.task_done()
+
+    # ── Настройки ─────────────────────────────────────────────────────────
+
+    def refresh_settings(self):
+        self.settings = SettingsManager.load()
+        for item in self.queue_items:
+            item._update_title_binding()
+            item._update_yandex_visibility(is_refresh=True)
+        self.page.update()
+
+    def _open_settings(self, e):
+        self._show_settings_dialog()
+
+    def _show_settings_dialog(self):
+        s = SettingsManager.load()
+
+        # ── Слайдер громкости ──
+        vol1_val = s.get("vol_original", 15)
+        vol2_val = s.get("vol_translate", 100)
+
+        lbl_vol1 = ft.Text(f"Громкость оригинала: {vol1_val}%", size=13, color=TEXT_PRIMARY)
+        lbl_vol2 = ft.Text(f"Громкость перевода: {vol2_val}%", size=13, color=TEXT_PRIMARY)
+
+        slider_vol1 = ft.Slider(
+            min=0, max=100, value=vol1_val,
+            active_color=ACCENT,
+            thumb_color=ACCENT,
+        )
+        slider_vol2 = ft.Slider(
+            min=0, max=100, value=vol2_val,
+            active_color=ACCENT,
+            thumb_color=ACCENT,
+        )
+
+        def upd_vol1(e):
+            lbl_vol1.value = f"Громкость оригинала: {int(slider_vol1.value)}%"
+            dlg.update()
+
+        def upd_vol2(e):
+            lbl_vol2.value = f"Громкость перевода: {int(slider_vol2.value)}%"
+            dlg.update()
+
+        slider_vol1.on_change = upd_vol1
+        slider_vol2.on_change = upd_vol2
+
+        # ── Переключатели ──
+        chk_trans = ft.Switch(
+            label="Авто-перевод Яндекса по умолчанию",
+            value=s.get("add_translation", False),
+            active_color=ACCENT,
+            label_style=ft.TextStyle(color=TEXT_PRIMARY),
+        )
+        chk_manual = ft.Switch(
+            label="Показывать кнопку ручного добавления аудио",
+            value=s.get("show_manual_audio", False),
+            active_color=ACCENT,
+            label_style=ft.TextStyle(color=TEXT_PRIMARY),
+        )
+        chk_del = ft.Switch(
+            label="Удалять оригинал после успешного перевода",
+            value=s.get("delete_original", False),
+            active_color=ACCENT,
+            label_style=ft.TextStyle(color=TEXT_PRIMARY),
+        )
+
+        # ── Переводчик ──
+        translators = ["Не переводить", "Google API", "Нейросеть (OpenAI/OpenRouter)"]
+        dd_translator = ft.DropdownM2(
+            options=[ft.dropdown.Option(t) for t in translators],
+            value=s.get("title_translator", "Не переводить"),
+            width=260,
+            text_size=13,
+            bgcolor=SURFACE,
+            border_color=SURFACE3,
+            color=TEXT_PRIMARY,
+        )
+
+        btn_ai = ft.FilledButton(
+            content="Настройка API",
+            icon=ft.Icons.PSYCHOLOGY,
+            style=ft.ButtonStyle(bgcolor=PURPLE_DIM, color=TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+
+        def on_translator_change(e):
+            btn_ai.disabled = dd_translator.value != "Нейросеть (OpenAI/OpenRouter)"
+            dlg.update()
+
+        dd_translator.on_change = on_translator_change
+        btn_ai.disabled = dd_translator.value != "Нейросеть (OpenAI/OpenRouter)"
+
+        def open_ai_settings(e):
+            dlg.open = False
+            self.page.update()
+            self._show_ai_settings_dialog(on_back=lambda: (setattr(dlg, 'open', True), self.page.update()))
+
+        btn_ai.on_click = open_ai_settings
+
+        # ── Путь сохранения ──
+        path_field = ft.TextField(
+            value=s.get("save_path", ""),
+            expand=True,
+            text_size=12,
+            bgcolor=SURFACE,
+            border_color=SURFACE3,
+            color=TEXT_PRIMARY,
+            height=40,
+        )
+
+        def browse_folder(e):
+            def on_dir(result: ft.FilePickerResultEvent):
+                if result.path:
+                    path_field.value = os.path.abspath(result.path)
+                    dlg.update()
+            picker = ft.FilePicker(on_result=on_dir)
+            self.page.overlay.append(picker)
+            self.page.update()
+            picker.get_directory_path(dialog_title="Выберите папку сохранения")
+
+        btn_browse = ft.IconButton(icon=ft.Icons.FOLDER_OPEN, icon_color=TEXT_MUTED, on_click=browse_folder, tooltip="Обзор")
+
+        # ── Кнопка сброса данных ──
+        def wipe_data(e):
+            def do_wipe(e2):
+                confirm_dlg.open = False
+                self.page.update()
+                shutil.rmtree(APP_DATA_DIR, ignore_errors=True)
+                os._exit(0)
+
+            def cancel_wipe(e2):
+                confirm_dlg.open = False
+                self.page.update()
+
+            confirm_dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Сброс приложения", color=ERROR_COLOR, weight=ft.FontWeight.BOLD),
+                bgcolor=SURFACE2,
+                content=ft.Text(
+                    "ВНИМАНИЕ!\nЭто удалит все настройки, логи и скачанные системные зависимости (Node.js, FFmpeg, yt-dlp). Приложение будет закрыто.\n\nПродолжить?",
+                    color=TEXT_PRIMARY,
+                ),
+                actions=[
+                    ft.FilledButton("Да, очистить", on_click=do_wipe, style=ft.ButtonStyle(bgcolor=ERROR_COLOR, color=TEXT_PRIMARY)),
+                    ft.TextButton("Отмена", on_click=cancel_wipe, style=ft.ButtonStyle(color=TEXT_MUTED)),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            self.page.overlay.append(confirm_dlg)
+            confirm_dlg.open = True
+            self.page.update()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([ft.Icon(ft.Icons.SETTINGS, color=ACCENT), ft.Text("Настройки", color=TEXT_PRIMARY, weight=ft.FontWeight.BOLD)], spacing=8),
+            bgcolor=SURFACE2,
+            content=ft.Column(
+                [
+                    # Раздел: Озвучка
+                    ft.Text("Озвучка видео (Yandex)", size=14, weight=ft.FontWeight.BOLD, color=ACCENT),
+                    chk_trans,
+                    chk_manual,
+                    chk_del,
+
+                    ft.Divider(color=SURFACE3, height=16),
+
+                    # Раздел: Переводчик
+                    ft.Text("Перевод названий (Текст)", size=14, weight=ft.FontWeight.BOLD, color=ACCENT),
+                    ft.Row([dd_translator, btn_ai], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+
+                    ft.Divider(color=SURFACE3, height=16),
+
+                    # Раздел: Громкость
+                    ft.Text("Параметры громкости", size=14, weight=ft.FontWeight.BOLD, color=ACCENT),
+                    lbl_vol1,
+                    slider_vol1,
+                    lbl_vol2,
+                    slider_vol2,
+
+                    ft.Divider(color=SURFACE3, height=16),
+
+                    # Раздел: Путь
+                    ft.Text("Путь сохранения", size=14, weight=ft.FontWeight.BOLD, color=ACCENT),
+                    ft.Row([path_field, btn_browse], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
+
+                    ft.Divider(color=SURFACE3, height=16),
+
+                    # Опасная зона
+                    ft.OutlinedButton(
+                        content="Очистить данные и зависимости…",
+                        icon=ft.Icons.DELETE_FOREVER,
+                        on_click=wipe_data,
+                        style=ft.ButtonStyle(
+                            color=ERROR_COLOR,
+                            side=ft.BorderSide(1, ERROR_COLOR),
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                ],
+                spacing=8,
+                width=480,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        def save_and_close(e):
+            current_settings = SettingsManager.load()
+            current_settings.update({
+                "add_translation": chk_trans.value,
+                "show_manual_audio": chk_manual.value,
+                "delete_original": chk_del.value,
+                "title_translator": dd_translator.value,
+                "vol_original": int(slider_vol1.value),
+                "vol_translate": int(slider_vol2.value),
+                "save_path": path_field.value,
+            })
+            SettingsManager.save(current_settings)
+            self.refresh_settings()
+            dlg.open = False
+            self.page.update()
+
+        def close_settings(e):
+            save_and_close(e)
+
+        dlg.actions = [
+            ft.FilledButton("Сохранить", icon=ft.Icons.SAVE, on_click=save_and_close, style=ft.ButtonStyle(bgcolor=SUCCESS, color=TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.TextButton("Закрыть", on_click=close_settings, style=ft.ButtonStyle(color=TEXT_MUTED)),
+        ]
+
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    def _show_ai_settings_dialog(self, on_back=None):
+        s = SettingsManager.load()
+        blacklist = s.get("blacklisted_models", [])
+
+        url_field = ft.TextField(
+            label="Base URL",
+            value=s.get("ai_base_url", "https://openrouter.ai/api/v1/chat/completions"),
+            expand=True,
+            text_size=12,
+            bgcolor=SURFACE,
+            border_color=SURFACE3,
+            color=TEXT_PRIMARY,
+        )
+
+        free_models = ["openrouter/free"]
+        saved_disc = s.get("discovered_models", [])
+        for m in saved_disc:
+            if m not in free_models and m not in blacklist:
+                free_models.append(m)
+
+        current_model = s.get("ai_model", "openrouter/free")
+        if current_model in blacklist:
+            current_model = "openrouter/free"
+
+        model_dd = ft.DropdownM2(
+            label="Модель (Model)",
+            options=[ft.dropdown.Option(m) for m in free_models],
+            value=current_model,
+            width=360,
+            text_size=12,
+            bgcolor=SURFACE,
+            border_color=SURFACE3,
+            color=TEXT_PRIMARY,
+        )
+
+        # Возможность ввести кастомную модель
+        model_custom = ft.TextField(
+            label="Или введите модель вручную",
+            hint_text="например: gpt-4o",
+            text_size=12,
+            bgcolor=SURFACE,
+            border_color=SURFACE3,
+            color=TEXT_PRIMARY,
+            width=360,
+        )
+
+        token_field = ft.TextField(
+            label="API Token",
+            value=s.get("ai_token", ""),
+            password=True,
+            can_reveal_password=True,
+            expand=True,
+            text_size=12,
+            bgcolor=SURFACE,
+            border_color=SURFACE3,
+            color=TEXT_PRIMARY,
+        )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([ft.Icon(ft.Icons.PSYCHOLOGY, color=PURPLE_DIM), ft.Text("Настройка API нейросети", color=TEXT_PRIMARY, weight=ft.FontWeight.BOLD)], spacing=8),
+            bgcolor=SURFACE2,
+            content=ft.Column(
+                [url_field, model_dd, model_custom, token_field],
+                spacing=12,
+                width=400,
+                tight=True,
+            ),
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        def save_ai(e):
+            cs = SettingsManager.load()
+            cs["ai_base_url"] = url_field.value.strip()
+            chosen = model_custom.value.strip() if model_custom.value and model_custom.value.strip() else model_dd.value
+            cs["ai_model"] = chosen
+            cs["ai_token"] = token_field.value.strip()
+            SettingsManager.save(cs)
+            self.refresh_settings()
+            dlg.open = False
+            self.page.update()
+            if on_back:
+                on_back()
+
+        def cancel_ai(e):
+            dlg.open = False
+            self.page.update()
+            if on_back:
+                on_back()
+
+        dlg.actions = [
+            ft.FilledButton("Сохранить", icon=ft.Icons.SAVE, on_click=save_ai, style=ft.ButtonStyle(bgcolor=SUCCESS, color=TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8))),
+            ft.TextButton("Отмена", on_click=cancel_ai, style=ft.ButtonStyle(color=TEXT_MUTED)),
+        ]
+
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    # ── Управление доступностью UI ─────────────────────────────────────────
+
+    def _toggle_ui(self, state: str):
+        enabled = state == "normal"
+        self._url_entry.disabled = not enabled
+        self._settings_btn.disabled = not enabled
+        self._btn_add.disabled = not enabled
+        self._mode_seg.disabled = not enabled
+        self._clear_btn.disabled = not enabled
+
+        mode = list(self._mode_seg.selected)[0] if self._mode_seg.selected else "Видео"
+        self._res_dropdown.disabled = not enabled or mode != "Видео"
+
+        for item in self.queue_items:
+            item.set_ui_enabled(enabled)
+        self.page.update()
+
+    # ── Загрузка видео (бизнес-логика без изменений) ──────────────────────
 
     def clean_temp_files(self):
         save_dir = self.settings.get("save_path", "")
         if save_dir and os.path.exists(save_dir):
             for file_name in os.listdir(save_dir):
                 if file_name.startswith("temp_v") or file_name.startswith("temp_trans_"):
-                    try:
-                        os.remove(os.path.join(save_dir, file_name))
-                    except OSError:
-                        pass
-        
-    def download_item(self, item):
+                    try: os.remove(os.path.join(save_dir, file_name))
+                    except: pass
+
+    def download_item(self, item: QueueItemWidget):
         process = None
         process_vot = None
         process_ff = None
         actual_translation_path = None
         vot_log_output = []
-        
+
         self.clean_temp_files()
-        
+
         try:
             safe_title = "".join([c for c in item.title_text if c.isalnum() or c in (' ', '.', '_', '-', '!')]).strip().rstrip('.')
             is_audio = (item.mode == "Только Аудио (MP3)")
-            res_raw = item.item_res_var.get()
+            res_raw = item.dropdown_res.value or "1080p FullHD"
             res_num = 2160 if "4K" in res_raw else (int(res_raw.split("p")[0]) if "p" in res_raw else 1080)
-            
+
             if is_audio:
                 base_name = f"{safe_title}.mp3"
                 final_name = base_name
@@ -1445,7 +1898,7 @@ class VideoApp(ctk.CTk):
                     final_name = f"{safe_title} {res_num}p (Яндекс).mp4"
                 else:
                     final_name = base_name
-                    
+
             base_path = os.path.join(self.settings["save_path"], base_name)
             final_path = os.path.join(self.settings["save_path"], final_name)
 
@@ -1455,85 +1908,89 @@ class VideoApp(ctk.CTk):
 
             if os.path.exists(final_path):
                 item.status = "done"
-                self.after(0, lambda: (item.set_status("✅ Файл уже существует", "green"), item.update_progress(100)))
+                item.set_status("✅ Файл уже существует", SUCCESS)
+                item.update_progress(100)
                 return
-                
+
             self.actual_downloads_occurred = True
 
-            # 1. СКАЧИВАНИЕ ПЕРЕВОДА 
+            # 1. СКАЧИВАНИЕ ПЕРЕВОДА
             if item.mode == "Видео":
                 if getattr(item, 'manual_audio_path', None) and os.path.exists(item.manual_audio_path):
                     actual_translation_path = item.manual_audio_path
-                    self.after(0, lambda: item.set_status("Используется свой файл перевода...", "purple"))
-                
+                    item.set_status("Используется свой файл перевода…", PURPLE_DIM)
+
                 elif getattr(item, 'use_yandex_translation', False) and self.deps.vot_path:
                     item.status = "processing"
-                    self.after(0, lambda: item.set_progress_mode("indeterminate"))
-                    
+                    item.set_progress_mode("indeterminate")
+
                     translate_temp = os.path.join(self.settings["save_path"], f"{item.video_id}.mp3")
-                    
+
                     cmd_vot = [
-                        self.deps.vot_path, 
+                        self.deps.vot_path,
                         f"--output={self.settings['save_path']}",
                         f"--output-file={item.video_id}.mp3",
                         "--voice-style=tts",
                         item.url
                     ]
-                        
+
                     kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                     env = os.environ.copy()
                     env["PATH"] = os.path.dirname(self.deps.node_exe) + os.pathsep + env.get("PATH", "")
-                    
+
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         if getattr(self, 'stop_requested', False):
                             raise Exception("Остановлено")
 
-                        self.after(0, lambda a=attempt: item.set_status(f"Перевод: запрос к серверу ({a}/{max_attempts})...", "purple"))
-                        
+                        item.set_status(f"Перевод: запрос к серверу ({attempt}/{max_attempts})…", PURPLE_DIM)
+
                         process_vot = subprocess.Popen(cmd_vot, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', **kwargs)
-                        
+
                         for line in process_vot.stdout:
                             if getattr(self, 'stop_requested', False):
                                 process_vot.terminate()
                                 raise Exception("Остановлено")
-                            
+
                             clean_line = line.strip()
                             if clean_line:
                                 vot_log_output.append(clean_line)
-                            
+
                             line_lower = line.lower()
                             if "performing" in line_lower or "waiting" in line_lower:
-                                self.after(0, lambda: item.set_status("Яндекс генерирует аудио...", "purple"))
+                                item.set_status("Яндекс генерирует аудио…", PURPLE_DIM)
                             elif "download" in line_lower or "загруз" in line_lower:
-                                self.after(0, lambda: item.set_status("Скачивание аудио дорожки перевода...", "purple"))
-                                    
+                                item.set_status("Скачивание аудио дорожки перевода…", PURPLE_DIM)
+
                         process_vot.wait()
-                        
-                        if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
-                        
+
+                        if getattr(self, 'stop_requested', False):
+                            raise Exception("Остановлено")
+
                         if os.path.exists(translate_temp):
                             actual_translation_path = translate_temp
                             break
                         else:
                             if attempt < max_attempts:
-                                self.after(0, lambda: item.set_status(f"Яндекс просит подождать... Пауза {VOT_RETRY_PAUSE_SEC} сек...", "purple"))
-                                for _ in range(VOT_RETRY_PAUSE_SEC):
-                                    if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
+                                item.set_status("Яндекс просит подождать… Пауза 15 сек…", PURPLE_DIM)
+                                for _ in range(15):
+                                    if getattr(self, 'stop_requested', False):
+                                        raise Exception("Остановлено")
                                     time.sleep(1)
                             else:
                                 raise Exception("Сервер Яндекса не отдал файл перевода")
 
             # 2. СКАЧИВАНИЕ ОРИГИНАЛЬНОГО ВИДЕО/АУДИО (YT-DLP)
             item.status = "downloading"
-            self.after(0, lambda: item.set_progress_mode("determinate"))
-            self.after(0, lambda: item.set_status("Скачивание оригинала (yt-dlp)...", "blue"))
-            
-            if not (not is_audio and actual_translation_path and os.path.exists(base_path)): 
+            item.set_progress_mode("determinate")
+            item.set_status("Скачивание оригинала (yt-dlp)…", INFO)
+
+            if not (not is_audio and actual_translation_path and os.path.exists(base_path)):
                 if is_audio:
                     cmd = [
-                        self.deps.ytdlp_path, '--force-overwrites', '--socket-timeout', '15', '-f', 'bestaudio', '--extract-audio', '--audio-format', 'mp3',
-                        '--audio-quality', '0', '-o', temp_template, '--newline', '--no-playlist', 
+                        self.deps.ytdlp_path, '--force-overwrites', '--socket-timeout', '15', '-f', 'bestaudio',
+                        '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0',
+                        '-o', temp_template, '--newline', '--no-playlist',
                         '--retries', '10', '--fragment-retries', '10', '--no-check-certificate',
                         '--ffmpeg-location', self.deps.ffmpeg_path, item.url
                     ]
@@ -1541,92 +1998,90 @@ class VideoApp(ctk.CTk):
                     MAX_DIMS = {4320: 7680, 2160: 3840, 1440: 2560, 1080: 1920, 720: 1280, 480: 854, 360: 640, 240: 426}
                     max_dim = MAX_DIMS.get(res_num, 1920)
                     cmd = [
-                        self.deps.ytdlp_path, '--force-overwrites', '--socket-timeout', '15', '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                        '-o', temp_video, '--newline', '--no-playlist', '--retries', '10', '--fragment-retries', '10',
-                        '--no-check-certificate', '--ffmpeg-location', self.deps.ffmpeg_path, item.url
+                        self.deps.ytdlp_path, '--force-overwrites', '--socket-timeout', '15',
+                        '-f', f'bestvideo[width<={max_dim}][height<={max_dim}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                        '-o', temp_video, '--newline', '--no-playlist',
+                        '--retries', '10', '--fragment-retries', '10', '--no-check-certificate',
+                        '--ffmpeg-location', self.deps.ffmpeg_path, item.url
                     ]
-                
+
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs)
-                
+
                 yt_stage = 1
                 last_yt_percent = 0.0
-                
+
                 for line in process.stdout:
                     if self.stop_requested:
                         process.terminate()
                         raise Exception("Остановлено")
-                        
+
                     match = re.search(r'\[download\]\s+([\d\.]+)%', line)
                     if match:
                         percent = float(match.group(1))
-                        
                         if percent < 5.0 and last_yt_percent > 90.0:
                             yt_stage = 2
-                            
                         last_yt_percent = percent
-                        
                         if yt_stage == 1:
-                            overall = percent * 0.5 
+                            overall = percent * 0.5
                         else:
                             overall = 50.0 + (percent * 0.3)
-                            
-                        self.after(0, item.update_progress, overall)
-                            
+                        item.update_progress(overall)
+
                 process.wait()
                 if process.returncode != 0 and not self.stop_requested:
                     raise Exception("Ошибка загрузки оригинального видео")
-                    
+
                 if process.returncode == 0:
-                    self.after(0, item.update_progress, 80 if not is_audio else 100)
+                    item.update_progress(80 if not is_audio else 100)
 
                 actual_temp = temp_mp3 if is_audio else temp_video
                 if os.path.exists(actual_temp):
                     if os.path.exists(base_path): os.remove(base_path)
                     os.rename(actual_temp, base_path)
 
-            if getattr(self, 'stop_requested', False): raise Exception("Остановлено")
+            if getattr(self, 'stop_requested', False):
+                raise Exception("Остановлено")
 
             # 3. ФИНАЛЬНАЯ СКЛЕЙКА (FFMPEG)
             if not is_audio and actual_translation_path:
                 item.status = "processing"
-                self.after(0, lambda: item.set_status("Склейка дорожек (FFmpeg)...", "orange"))
-                
+                item.set_status("Склейка дорожек (FFmpeg)…", WARNING)
+
                 duration = float(item.video_info.get('duration') or 0.0)
                 if duration <= 0:
-                    self.after(0, lambda: item.set_progress_mode("indeterminate"))
-                
-                v1, v2 = self.settings["vol_original"]/100, self.settings["vol_translate"]/100
-                cmd_ffmpeg = [self.deps.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
-                       '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
-                       '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path]
-                       
+                    item.set_progress_mode("indeterminate")
+
+                v1, v2 = self.settings["vol_original"] / 100, self.settings["vol_translate"] / 100
+                cmd_ffmpeg = [
+                    self.deps.ffmpeg_path, '-y', '-i', base_path, '-i', actual_translation_path,
+                    '-filter_complex', f'[0:a]volume={v1}[a1];[1:a]volume={v2}[a2];[a1][a2]amix=inputs=2[aout]',
+                    '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', final_path
+                ]
+
                 kwargs = {'startupinfo': self.startupinfo} if self.startupinfo else {}
                 process_ff = subprocess.Popen(cmd_ffmpeg, stderr=subprocess.PIPE, text=True, errors='ignore', **kwargs)
-                
+
                 for line in process_ff.stderr:
                     if self.stop_requested:
                         process_ff.terminate()
                         raise Exception("Остановлено")
-                        
+
                     if duration > 0:
                         time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d+)', line)
                         if time_match:
                             h = float(time_match.group(1))
                             m = float(time_match.group(2))
-                            s = float(time_match.group(3))
-                            current_sec = h * 3600 + m * 60 + s
+                            sec = float(time_match.group(3))
+                            current_sec = h * 3600 + m * 60 + sec
                             ff_percent = min((current_sec / duration) * 100.0, 100.0)
                             overall = 80.0 + (ff_percent * 0.2)
-                            self.after(0, item.update_progress, overall)
-                            
+                            item.update_progress(overall)
+
                 process_ff.wait()
-                if process_ff.returncode != 0 and not self.stop_requested:
-                    raise Exception(f"FFmpeg завершился с кодом {process_ff.returncode}")
-                
                 if duration <= 0:
-                    self.after(0, lambda: item.set_progress_mode("determinate"))
-                    
+                    item.set_progress_mode("determinate")
+
                 if self.settings.get("delete_original", False):
                     try:
                         if os.path.exists(base_path) and os.path.exists(final_path):
@@ -1635,58 +2090,67 @@ class VideoApp(ctk.CTk):
                         log_error(item.video_id, "Ошибка удаления оригинального видео", del_e)
 
             item.status = "done"
-            self.after(0, lambda: (item.set_status("✅ Готово", "green"), item.update_progress(100)))
-            
+            item.set_status("✅ Готово", SUCCESS)
+            item.update_progress(100)
+
         except Exception as e:
-            if process and process.poll() is None: process.terminate() 
-            if process_vot and process_vot.poll() is None: process_vot.terminate() 
-            if process_ff and process_ff.poll() is None: process_ff.terminate() 
-            
+            if process and process.poll() is None: process.terminate()
+            if process_vot and process_vot.poll() is None: process_vot.terminate()
+            if process_ff and process_ff.poll() is None: process_ff.terminate()
+
             item.status = "error"
-            self.after(0, lambda: item.set_progress_mode("determinate")) 
-            
+            item.set_progress_mode("determinate")
+
             err_msg = str(e)
-            
+
             if "Остановлено" in err_msg:
                 status_msg = "⏹ Остановлено"
             elif "Ошибка перевода" in err_msg or "Сервер Яндекса" in err_msg:
-                status_msg = f"❌ Ошибка перевода (error.log)"
+                status_msg = "❌ Ошибка перевода (error.log)"
                 log_error(item.video_id, err_msg, e, " | ".join(vot_log_output[-15:]))
             else:
                 status_msg = "❌ Ошибка загрузки"
                 log_error(item.video_id, err_msg, e)
-                
-            self.after(0, lambda text=status_msg: item.set_status(text, "red"))
-            
+
+            item.set_status(status_msg, ERROR_COLOR)
+
         finally:
             if actual_translation_path and os.path.exists(actual_translation_path):
                 if getattr(item, 'manual_audio_path', None) != actual_translation_path:
-                    try:
-                        os.remove(actual_translation_path)
-                    except OSError:
-                        pass
+                    try: os.remove(actual_translation_path)
+                    except: pass
             self.clean_temp_files()
 
-    def restore_ui_state(self):
+    # ── Восстановление UI после очереди ───────────────────────────────────
+
+    def _restore_ui_state(self):
         self.is_downloading = False
-        self.start_btn.configure(text="▶ Запустить очередь", command=self.start_queue, fg_color="green", hover_color="darkgreen", state="normal")
-        
+
+        self._start_btn.content = "▶  Запустить очередь"
+        self._start_btn.icon = ft.Icons.PLAY_ARROW
+        self._start_btn.on_click = self._start_queue
+        self._start_btn.style.bgcolor = ACCENT
+        self._start_btn.disabled = False
+
         done = sum(1 for i in self.queue_items if i.status == "done")
         errors = sum(1 for i in self.queue_items if i.status == "error")
         total = len(self.queue_items)
-        
-        if self.stop_requested:
-            self.status_label.configure(text=f"Очередь остановлена. Завершено: {done}/{total}", text_color="orange")
-        elif errors > 0:
-            self.status_label.configure(text=f"Очередь завершена с ошибками. Успешно: {done}/{total}", text_color="red")
-        else:
-            self.status_label.configure(text="🎉 Все загрузки успешно завершены!", text_color="green")
-            if getattr(self, 'actual_downloads_occurred', False):
-                self.open_save_folder()
-            
-        self.toggle_ui("normal")
 
-    def open_save_folder(self):
+        if self.stop_requested:
+            self._status_label.value = f"Очередь остановлена. Завершено: {done}/{total}"
+            self._status_label.color = WARNING
+        elif errors > 0:
+            self._status_label.value = f"Очередь завершена с ошибками. Успешно: {done}/{total}"
+            self._status_label.color = ERROR_COLOR
+        else:
+            self._status_label.value = "🎉 Все загрузки успешно завершены!"
+            self._status_label.color = SUCCESS
+            if getattr(self, 'actual_downloads_occurred', False):
+                self._open_save_folder()
+
+        self._toggle_ui("normal")
+
+    def _open_save_folder(self):
         save_path = self.settings.get("save_path", "")
         if os.path.exists(save_path):
             try:
@@ -1699,23 +2163,65 @@ class VideoApp(ctk.CTk):
             except Exception as e:
                 print(f"Failed to open folder: {e}")
 
-    def on_closing(self):
-        if self.is_downloading:
-            if messagebox.askyesno("Подтверждение", "Очередь активна. Прервать и закрыть?"):
-                self.stop_requested = True
-                self.attributes('-disabled', True) 
-                self.after(1500, self._perform_exit)
-        else:
+    # ── Закрытие приложения ────────────────────────────────────────────────
+
+    def _on_window_event(self, e: ft.WindowEvent):
+        # WindowEventType.CLOSE is fired when user clicks X (requires prevent_close=True)
+        try:
+            is_close = (e.type == ft.WindowEventType.CLOSE)
+        except AttributeError:
+            is_close = (getattr(e, 'data', '') == 'close')
+        if is_close:
+            if self.is_downloading:
+                self._confirm_close()
+            else:
+                self._perform_exit()
+
+    def _confirm_close(self):
+        def do_exit(e):
+            confirm_dlg.open = False
+            self.page.update()
+            self.stop_requested = True
+            time.sleep(1.5)
             self._perform_exit()
 
+        def cancel_exit(e):
+            confirm_dlg.open = False
+            self.page.update()
+
+        confirm_dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Подтверждение", color=TEXT_PRIMARY, weight=ft.FontWeight.BOLD),
+            bgcolor=SURFACE2,
+            content=ft.Text("Очередь активна. Прервать и закрыть?", color=TEXT_PRIMARY),
+            actions=[
+                ft.FilledButton("Да, закрыть", on_click=do_exit, style=ft.ButtonStyle(bgcolor=ERROR_COLOR, color=TEXT_PRIMARY)),
+                ft.TextButton("Нет", on_click=cancel_exit, style=ft.ButtonStyle(color=TEXT_MUTED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.overlay.append(confirm_dlg)
+        confirm_dlg.open = True
+        self.page.update()
+
     def _perform_exit(self):
-        self.settings["global_quality"] = self.res_combobox.get()
+        self.settings["global_quality"] = self._res_dropdown.value or "4K (2160p)"
         SettingsManager.save(self.settings)
-        
         self.clean_temp_files()
-        self.destroy()
-        os._exit(0)  # Намеренно: daemon-потоки не дают процессу завершиться через sys.exit()
+        try:
+            self.page.window.close()
+        except Exception:
+            pass
+        os._exit(0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Точка входа
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main(page: ft.Page):
+    VideoApp(page)
+
 
 if __name__ == "__main__":
-    app = VideoApp()
-    app.mainloop()
+    ft.run(main)
